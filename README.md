@@ -15,6 +15,16 @@
 
 Insomnia lives in the menu bar. Turn it on, close the lid and put the Mac in your bag. Claude Code, Codex and the others keep working, and the Mac goes to sleep once they are done.
 
+## Download
+
+**[Download Insomnia](https://github.com/michalp1111/insomnia/releases/latest/download/Insomnia.zip)** for macOS 14 or later, on Apple silicon or Intel.
+
+1. Open the downloaded `Insomnia.zip`, unless your browser already did, and drag **Insomnia** into your **Applications** folder.
+2. Open Insomnia. It is not notarized by Apple yet, so the first time macOS refuses to open it. Click **Done**.
+3. Go to **System Settings › Privacy & Security**, scroll down to the note about Insomnia and click **Open Anyway**, then confirm.
+
+Insomnia now sits in the menu bar as a closed eye. Click it and flip the switch. The first time, macOS asks for your password once so that Insomnia can keep working with the lid closed. Turn on **Open at Login** to have it start with your Mac.
+
 ## How it works
 
 - **While Agents Work** keeps the Mac awake only while an agent is actually working, and lets it sleep 5 minutes after the last one finishes.
@@ -46,9 +56,9 @@ Safeguards:
 
 Turned off, Insomnia does nothing at all. In Until Turned Off it only listens for system events. Watching agents takes a scan of a millisecond or two every 10 seconds, or every 30 seconds while they work, which stays under 0.1 % of one CPU core.
 
-## Install
+## Build from source
 
-Requires macOS 14 or later, on Apple silicon or Intel, and the Command Line Tools (`xcode-select --install`).
+Requires the Command Line Tools (`xcode-select --install`).
 
 ```bash
 scripts/build.sh release --install
@@ -58,7 +68,7 @@ This builds a universal app and installs it to `/Applications`. No Xcode project
 
 ## Uninstall
 
-Quit Insomnia, move it to the Trash and remove the rule:
+Quit Insomnia and move it to the Trash. To remove the closed-lid permission as well, run this in Terminal:
 
 ```bash
 sudo rm /etc/sudoers.d/insomnia
