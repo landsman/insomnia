@@ -73,3 +73,7 @@ Quit Insomnia and move it to the Trash. To remove the closed-lid permission as w
 ```bash
 sudo rm /etc/sudoers.d/insomnia
 ```
+
+---
+
+<p align="center">Made by <a href="https://www.linkedin.com/in/michalptacek/">Michal Ptacek</a></p>
