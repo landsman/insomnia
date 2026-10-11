@@ -2,11 +2,13 @@
 import AppKit
 
 /// INSOMNIA_SNAPSHOT=/tmp/shot opens the menu, saves /tmp/shot-menu.png and /tmp/shot-icon.png, and quits.
-/// INSOMNIA_ON=1, INSOMNIA_MODE=always, INSOMNIA_DARK=1 and INSOMNIA_HIGHLIGHT=<row title> set up what to capture.
+/// INSOMNIA_ON=1, INSOMNIA_MODE=always, INSOMNIA_DARK=1, INSOMNIA_HIGHLIGHT=<row title> and
+/// INSOMNIA_AGENTS="project:Agent,…" (working agents to show instead of real ones) set up what to capture.
 @MainActor
 struct Snapshot {
     let path: String
     let defaults: UserDefaults
+    let agents: [Agent]?
 
     static var requested: Snapshot? {
         let environment = ProcessInfo.processInfo.environment
@@ -14,7 +16,13 @@ struct Snapshot {
               let defaults = UserDefaults(suiteName: "com.michalptacek.insomnia.snapshot") else { return nil }
         defaults.set(environment["INSOMNIA_ON"] == "1", forKey: "on")
         defaults.set(environment["INSOMNIA_MODE"] ?? "agents", forKey: "mode")
-        return Snapshot(path: path, defaults: defaults)
+        let agents = environment["INSOMNIA_AGENTS"].map { list in
+            list.split(separator: ",").enumerated().map { index, entry in
+                let parts = entry.split(separator: ":", maxSplits: 1).map(String.init)
+                return Agent(pid: pid_t(index + 1), name: parts.last ?? "", project: parts.first ?? "", isWorking: true)
+            }
+        }
+        return Snapshot(path: path, defaults: defaults, agents: agents)
     }
 
     func run(_ statusMenu: StatusMenu) {

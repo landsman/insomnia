@@ -23,17 +23,27 @@ final class AgentMonitor {
     private static let shells: Set = ["sh", "bash", "zsh", "fish", "dash", "ksh", "tcsh", "nu"]
 
     /// Shells older than this are taken for background servers rather than tools in progress.
-    private static let toolAge: TimeInterval = 30 * 60
+    private static let toolAge = 30 * 60
     private static let busyCPU = 0.1
+    /// A model served on this Mac counts once it streams real data, unlike the keep-alive chatter of an IDE link.
+    private static let busyLoopbackBytes: UInt64 = 4096
 
     private struct Process {
         let pid: pid_t
         let parent: pid_t
         let name: String
-        let started: TimeInterval
+        let started: Int
     }
 
-    private var cpu: [pid_t: Double] = [:]
+    private struct Connection {
+        let key: UInt32
+        let isLoopback: Bool
+    }
+
+    /// Interpreted and version-named processes need their arguments read to be told apart, so that happens once per process.
+    private var identified: [pid_t: (started: Int, agent: String?)] = [:]
+    private var projects: [pid_t: String] = [:]
+    private var cpu: [pid_t: (seconds: Double, at: Date)] = [:]
     private var traffic: [UInt32: UInt64] = [:]
     private var lastScan: Date?
     private var lastBusy: [pid_t: Date] = [:]
@@ -44,66 +54,71 @@ final class AgentMonitor {
     }()
 
     func scan(now: Date = .now) -> [Agent] {
-        // Counters only compare across back-to-back scans: work done while nobody watched is not work now.
-        let elapsed = lastScan.map { now.timeIntervalSince($0) } ?? .infinity
-        let continuous = elapsed < 20
+        // Traffic only counts between back-to-back scans: work done while nobody watched is not work now.
+        let continuous = lastScan.map { now.timeIntervalSince($0) < 60 } ?? false
         lastScan = now
-        let previousTraffic = traffic
-        traffic = Self.trafficByConnection()
-        let processes = Self.processes()
-        let byPID = Dictionary(processes.map { ($0.pid, $0) }, uniquingKeysWith: { first, _ in first })
-        var children: [pid_t: [Process]] = [:]
-        for process in processes { children[process.parent, default: []].append(process) }
 
-        var names: [pid_t: String] = [:]
-        for process in processes {
-            if let name = Self.agentName(of: process) { names[process.pid] = name }
+        var byPID: [pid_t: Process] = [:], children: [pid_t: [Process]] = [:], names: [pid_t: String] = [:]
+        for process in Self.processes() {
+            byPID[process.pid] = process
+            children[process.parent, default: []].append(process)
+            if let name = agentName(of: process) { names[process.pid] = name }
         }
+        identified = identified.filter { byPID[$0.key] != nil }
 
-        func hasAgentAncestor(_ pid: pid_t) -> Bool {
+        let roots = names.keys.filter { pid in
             var parent = byPID[pid]?.parent
             while let pid = parent, pid > 1 {
-                if names[pid] != nil { return true }
+                if names[pid] != nil { return false }
                 parent = byPID[pid]?.parent
             }
-            return false
+            return true
         }
-
-        func tree(_ root: Process) -> [Process] {
-            var result = [root], index = 0
-            while index < result.count {
-                result += children[result[index].pid] ?? []
+        let trees = roots.map { root in
+            var members = [byPID[root]!], index = 0
+            while index < members.count {
+                members += children[members[index].pid] ?? []
                 index += 1
             }
-            return result
+            return members
         }
+        let connections = trees.map { $0.filter { names[$0.pid] != nil }.flatMap { Self.connections(of: $0.pid) } }
+        let previousTraffic = traffic
+        traffic = connections.contains { !$0.isEmpty } ? Self.trafficByConnection() : [:]
 
         var found: [Agent] = []
-        for (pid, name) in names where !hasAgentAncestor(pid) {
-            guard let root = byPID[pid] else { continue }
-            let members = tree(root)
-            var transferred: UInt64 = 0
-            for member in members where names[member.pid] != nil {
-                for connection in Self.connections(of: member.pid) {
-                    let total = traffic[connection] ?? 0
-                    transferred += total - min(total, previousTraffic[connection] ?? 0)
-                }
+        for (index, root) in roots.enumerated() {
+            let members = trees[index]
+            let runningTool = members.dropFirst().contains {
+                Self.shells.contains($0.name) && Int(now.timeIntervalSince1970) - $0.started < Self.toolAge
             }
-            let runningTool = members.contains {
-                $0.pid != pid && Self.shells.contains($0.name) && now.timeIntervalSince1970 - $0.started < Self.toolAge
+            var remote: UInt64 = 0, local: UInt64 = 0
+            for connection in connections[index] {
+                let total = traffic[connection.key] ?? 0
+                let moved = total - min(total, previousTraffic[connection.key] ?? 0)
+                if connection.isLoopback { local += moved } else { remote += moved }
             }
-            let seconds = members.reduce(0) { $0 + cpuSeconds($1.pid) }
-            let busyCPU = continuous && (seconds - (cpu[pid] ?? seconds)) / elapsed > Self.busyCPU
-            cpu[pid] = seconds
-            if continuous && transferred > 0 || runningTool || busyCPU { lastBusy[pid] = now }
-            let working = lastBusy[pid].map { now.timeIntervalSince($0) < 30 } ?? false
-            found.append(Agent(pid: pid, name: name, project: Self.project(of: pid), isWorking: working))
+            let talking = continuous && (remote > 0 || local > Self.busyLoopbackBytes)
+            if talking || runningTool || isBusy(root, members, now: now) { lastBusy[root] = now }
+            if projects[root] == nil { projects[root] = Self.project(of: root) }
+            let working = lastBusy[root].map { now.timeIntervalSince($0) < 45 } ?? false
+            found.append(Agent(pid: root, name: names[root]!, project: projects[root]!, isWorking: working))
         }
 
-        let alive = Set(found.map(\.pid))
+        let alive = Set(roots)
         lastBusy = lastBusy.filter { alive.contains($0.key) }
+        projects = projects.filter { alive.contains($0.key) }
         cpu = cpu.filter { alive.contains($0.key) }
         return found.sorted { ($0.project, $0.name, $0.pid) < ($1.project, $1.name, $1.pid) }
+    }
+
+    private func isBusy(_ root: pid_t, _ members: [Process], now: Date) -> Bool {
+        let seconds = members.reduce(0) { $0 + cpuSeconds($1.pid) }
+        let elapsed = cpu[root].map { now.timeIntervalSince($0.at) } ?? .infinity
+        // A blip in a short window is no load, so short windows keep the older baseline.
+        guard elapsed >= 2 else { return false }
+        defer { cpu[root] = (seconds, now) }
+        return elapsed < 60 && (seconds - cpu[root]!.seconds) / elapsed > Self.busyCPU
     }
 
     private func cpuSeconds(_ pid: pid_t) -> Double {
@@ -116,30 +131,33 @@ final class AgentMonitor {
         return Double(ticks) * secondsPerTick
     }
 
-    private static func processes() -> [Process] {
-        var pids = [pid_t](repeating: 0, count: 8192)
-        let bytes = proc_listpids(UInt32(PROC_UID_ONLY), getuid(), &pids, Int32(pids.count * MemoryLayout<pid_t>.size))
-        return pids.prefix(Int(bytes) / MemoryLayout<pid_t>.size).compactMap { pid in
-            var info = proc_bsdinfo()
-            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
-            guard pid > 0, proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
-            let name = string(info.pbi_name)
-            return Process(pid: pid, parent: pid_t(info.pbi_ppid), name: name.isEmpty ? string(info.pbi_comm) : name,
-                           started: TimeInterval(info.pbi_start_tvsec))
+    private func agentName(of process: Process) -> String? {
+        if let name = Self.agents[process.name] { return name }
+        // Scripts run through an interpreter, and native installs may be named after their version.
+        guard Self.interpreters.contains(process.name) || process.name.hasPrefix("python") || process.name.first?.isNumber == true
+        else { return nil }
+        if let known = identified[process.pid], known.started == process.started { return known.agent }
+        var arguments = Self.arguments(of: process.pid)[...]
+        var tool = arguments.popFirst().map(Self.lastComponent) ?? ""
+        if Self.interpreters.contains(tool) || tool.hasPrefix("python") {
+            tool = arguments.first { !$0.hasPrefix("-") }.map(Self.lastComponent) ?? ""
         }
+        identified[process.pid] = (process.started, Self.agents[tool])
+        return Self.agents[tool]
     }
 
-    private static func agentName(of process: Process) -> String? {
-        if let name = agents[process.name] { return name }
-        // Scripts run through an interpreter, and native installs may be named after their version.
-        guard interpreters.contains(process.name) || process.name.hasPrefix("python") || process.name.first?.isNumber == true
-        else { return nil }
-        var arguments = Self.arguments(of: process.pid)[...]
-        guard var tool = arguments.popFirst().map(lastComponent) else { return nil }
-        if interpreters.contains(tool) || tool.hasPrefix("python") {
-            tool = arguments.first { !$0.hasPrefix("-") }.map(lastComponent) ?? ""
+    /// All processes of this user in one call.
+    private static func processes() -> [Process] {
+        var mib = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(bitPattern: getuid())]
+        var size = 0
+        guard sysctl(&mib, 4, nil, &size, nil, 0) == 0 else { return [] }
+        var list = [kinfo_proc](repeating: kinfo_proc(), count: size / MemoryLayout<kinfo_proc>.stride + 32)
+        size = list.count * MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&mib, 4, &list, &size, nil, 0) == 0 else { return [] }
+        return list.prefix(size / MemoryLayout<kinfo_proc>.stride).map {
+            Process(pid: $0.kp_proc.p_pid, parent: $0.kp_eproc.e_ppid, name: string($0.kp_proc.p_comm),
+                    started: $0.kp_proc.p_un.__p_starttime.tv_sec)
         }
-        return agents[tool]
     }
 
     private static func arguments(of pid: pid_t) -> [String] {
@@ -171,8 +189,8 @@ final class AgentMonitor {
         return path == NSHomeDirectory() ? "~" : lastComponent(path)
     }
 
-    /// Established TCP connections to anything but this Mac, keyed like trafficByConnection().
-    private static func connections(of pid: pid_t) -> [UInt32] {
+    /// Established TCP connections, keyed like trafficByConnection().
+    private static func connections(of pid: pid_t) -> [Connection] {
         let bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, nil, 0)
         guard bytes > 0 else { return [] }
         var descriptors = [proc_fdinfo](repeating: proc_fdinfo(), count: Int(bytes) / MemoryLayout<proc_fdinfo>.stride)
@@ -185,9 +203,10 @@ final class AgentMonitor {
             guard proc_pidfdinfo(pid, descriptor.proc_fd, PROC_PIDFDSOCKETINFO, &socket, size) == size,
                   socket.psi.soi_kind == SOCKINFO_TCP else { return nil }
             let tcp = socket.psi.soi_proto.pri_tcp
-            guard tcp.tcpsi_state == TSI_S_ESTABLISHED, !isLoopback(tcp.tcpsi_ini) else { return nil }
-            return UInt32(UInt16(truncatingIfNeeded: tcp.tcpsi_ini.insi_fport))
+            guard tcp.tcpsi_state == TSI_S_ESTABLISHED else { return nil }
+            let key = UInt32(UInt16(truncatingIfNeeded: tcp.tcpsi_ini.insi_fport))
                 | UInt32(UInt16(truncatingIfNeeded: tcp.tcpsi_ini.insi_lport)) << 16
+            return Connection(key: key, isLoopback: isLoopback(tcp.tcpsi_ini))
         }
     }
 

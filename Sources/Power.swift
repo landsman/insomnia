@@ -11,10 +11,12 @@ final class Power {
 
     private static let rule = "/etc/sudoers.d/insomnia"
     private static let lowBattery = 10
+    private static let rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
 
     private let defaults: UserDefaults
     private var activity: NSObjectProtocol?
     private var watchdog: Process?
+    private var lifeline: Pipe?
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
@@ -38,6 +40,7 @@ final class Power {
         if let watchdog {
             watchdog.terminate()
             self.watchdog = nil
+            lifeline = nil
             setSleepDisabled(false)
         }
         // With the lid already shut nothing else would put the Mac to sleep, say in a bag.
@@ -46,6 +49,12 @@ final class Power {
             IOPMSleepSystem(port)
             IOServiceClose(port)
         }
+    }
+
+    /// Puts SleepDisabled back if something else, such as another keep-awake app, switched it off underneath.
+    func reassert() {
+        guard watchdog != nil, !Self.rootDomainFlag("SleepDisabled") else { return }
+        setSleepDisabled(true)
     }
 
     /// Shows the system administrator prompt and installs the sudoers rule.
@@ -80,12 +89,15 @@ final class Power {
     private func holdLid() {
         guard activity != nil, watchdog == nil, canKeepLidClosed, setSleepDisabled(true) else { return }
         // Restores sleep if Insomnia dies without cleaning up, so a crash never cooks a Mac in a bag.
+        // It sleeps in a read from a pipe only Insomnia holds open, which ends the moment Insomnia is gone.
+        let lifeline = Pipe()
         let watchdog = Process()
         watchdog.executableURL = URL(fileURLWithPath: "/bin/sh")
-        watchdog.arguments = ["-c", "while /bin/kill -0 \(getpid()) 2>/dev/null; do /bin/sleep 2; done; "
-            + "/usr/bin/sudo -n /usr/bin/pmset -a disablesleep 0"]
+        watchdog.arguments = ["-c", "read _; exec /usr/bin/sudo -n /usr/bin/pmset -a disablesleep 0"]
+        watchdog.standardInput = lifeline
         try? watchdog.run()
         self.watchdog = watchdog
+        self.lifeline = lifeline
     }
 
     @discardableResult
@@ -106,8 +118,6 @@ final class Power {
     }
 
     private static func rootDomainFlag(_ key: String) -> Bool {
-        let domain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
-        defer { IOObjectRelease(domain) }
-        return IORegistryEntryCreateCFProperty(domain, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool ?? false
+        IORegistryEntryCreateCFProperty(rootDomain, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool ?? false
     }
 }

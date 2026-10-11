@@ -5,6 +5,12 @@ import ServiceManagement
 final class StatusMenu: NSObject, NSMenuDelegate {
     private static let openEye = StatusIcon.image(open: true)
     private static let closedEye = StatusIcon.image(open: false)
+    private static let duration: DateComponentsFormatter = {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.hour, .minute]
+        formatter.unitsStyle = .short
+        return formatter
+    }()
 
     let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     let menu = NSMenu()
@@ -16,6 +22,12 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private let login = SwitchView(title: "Open at Login")
     private var agentViews: [AgentView] = []
     private var structure = ""
+    private var isOpen = false
+    private var shownAwake: Bool?
+    private var shownOn: Bool?
+    // Both cost a system query, so they are read when the menu opens rather than on every refresh.
+    private var loginEnabled = SMAppService.mainApp.status == .enabled
+    private lazy var canKeepLidClosed = insomnia.power.canKeepLidClosed
 
     init(insomnia: Insomnia) {
         self.insomnia = insomnia
@@ -32,31 +44,52 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         alwaysOption.onSelect = { [weak self] in self?.choose(.always) }
         insomnia.onChange = { [weak self] in self?.update() }
         update()
+        updateMenu()
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        loginEnabled = SMAppService.mainApp.status == .enabled
+        canKeepLidClosed = insomnia.power.canKeepLidClosed
+        updateMenu()
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        isOpen = true
         insomnia.isWatching = true
     }
 
     func menuDidClose(_ menu: NSMenu) {
+        isOpen = false
         insomnia.isWatching = false
     }
 
+    /// Touches the menu bar only when its state changes; the menu itself only while it is open.
     private func update() {
+        let awake = insomnia.awakeSince != nil
+        if awake != shownAwake {
+            shownAwake = awake
+            statusItem.button?.image = awake ? Self.openEye : Self.closedEye
+        }
+        if insomnia.isOn != shownOn {
+            shownOn = insomnia.isOn
+            statusItem.button?.appearsDisabled = !insomnia.isOn
+        }
+        if isOpen { updateMenu() }
+    }
+
+    private func updateMenu() {
         let working = workingAgents
-        let structure = "\(insomnia.mode) \(working.count) \(insomnia.power.canKeepLidClosed)"
+        let structure = "\(insomnia.mode) \(working.count) \(canKeepLidClosed)"
         if structure != self.structure {
             self.structure = structure
             rebuild(agentRows: working.count)
         }
 
-        statusItem.button?.image = insomnia.awakeSince == nil ? Self.closedEye : Self.openEye
-        statusItem.button?.appearsDisabled = !insomnia.isOn
         header.toggle.state = insomnia.isOn ? .on : .off
         header.statusText = status
         agentsOption.isSelected = insomnia.mode == .agents
         alwaysOption.isSelected = insomnia.mode == .always
-        login.toggle.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        login.toggle.state = loginEnabled ? .on : .off
         for (view, agent) in zip(agentViews, working) { view.agent = agent }
         let count = insomnia.agents.count
         note.text = count == 0 ? "No agents running" : count == 1 ? "1 agent is idle" : "\(count) agents are idle"
@@ -79,7 +112,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
             if agentRows == 0 { menu.addItem(item(view: note, enabled: false)) }
         }
 
-        if !insomnia.power.canKeepLidClosed {
+        if !canKeepLidClosed {
             menu.addItem(.separator())
             menu.addItem(item("Stay Awake with Lid Closed…", #selector(allowClosedLid)))
         }
@@ -106,10 +139,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         }
         let elapsed = Date.now.timeIntervalSince(since)
         guard elapsed >= 60 else { return "Keeping your Mac awake" }
-        let formatter = DateComponentsFormatter()
-        formatter.allowedUnits = [.hour, .minute]
-        formatter.unitsStyle = .short
-        return "Awake for \(formatter.string(from: elapsed) ?? "")"
+        return "Awake for \(Self.duration.string(from: elapsed) ?? "")"
     }
 
     /// Working agents, one row per project and agent.
@@ -139,7 +169,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     private func turn(on: Bool) {
         insomnia.isOn = on
         let defaults = UserDefaults.standard
-        guard on, !insomnia.power.canKeepLidClosed, !defaults.bool(forKey: "askedForClosedLid") else { return }
+        guard on, !canKeepLidClosed, !defaults.bool(forKey: "askedForClosedLid") else { return }
         defaults.set(true, forKey: "askedForClosedLid")
         menu.cancelTracking()
         // The default mode only comes back once the menu is gone.
@@ -155,13 +185,15 @@ final class StatusMenu: NSObject, NSMenuDelegate {
 
     @objc private func allowClosedLid() {
         insomnia.power.allowClosedLid()
-        update()
+        canKeepLidClosed = insomnia.power.canKeepLidClosed
+        updateMenu()
     }
 
     @objc private func toggleLogin() {
         let service = SMAppService.mainApp
-        try? service.status == .enabled ? service.unregister() : service.register()
-        update()
+        try? loginEnabled ? service.unregister() : service.register()
+        loginEnabled = service.status == .enabled
+        updateMenu()
     }
 
     @objc private func quit() {

@@ -17,6 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG
         if let snapshot = Snapshot.requested {
             insomnia = Insomnia(defaults: snapshot.defaults)
+            insomnia.demoAgents = snapshot.agents
             statusMenu = StatusMenu(insomnia: insomnia)
             snapshot.run(statusMenu)
             return

@@ -1,4 +1,5 @@
 import AppKit
+import IOKit.ps
 
 @MainActor
 final class Insomnia {
@@ -8,24 +9,20 @@ final class Insomnia {
     static let grace: TimeInterval = 5 * 60
 
     var isOn: Bool {
-        didSet { defaults.set(isOn, forKey: "on"); refresh() }
+        didSet { defaults.set(isOn, forKey: "on"); refresh(); rescanSoon() }
     }
     var mode: Mode {
-        didSet { defaults.set(mode.rawValue, forKey: "mode"); refresh() }
+        didSet { defaults.set(mode.rawValue, forKey: "mode"); refresh(); rescanSoon() }
     }
     /// The menu watches agents while it is open, even when Insomnia is off.
     var isWatching = false {
-        didSet {
-            refresh()
-            guard isWatching else { return }
-            // Work shows as change between two scans, so a menu opened cold takes a second look right away.
-            let rescan = Timer(timeInterval: 1, repeats: false) { [weak self] _ in
-                MainActor.assumeIsolated { self?.refresh() }
-            }
-            RunLoop.main.add(rescan, forMode: .common)
-        }
+        didSet { refresh(); rescanSoon() }
     }
     var onChange: () -> Void = {}
+    #if DEBUG
+    /// Snapshots show these instead of the agents running on this Mac.
+    var demoAgents: [Agent]?
+    #endif
 
     private(set) var agents: [Agent] = []
     private(set) var pause: Power.Pause?
@@ -43,6 +40,17 @@ final class Insomnia {
         isOn = defaults.bool(forKey: "on")
         mode = Mode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .agents
         refresh()
+        rescanSoon()
+
+        // Battery and heat are pushed by the system, so only agents ever need polling.
+        let powerSource = IOPSNotificationCreateRunLoopSource({ context in
+            MainActor.assumeIsolated { Unmanaged<Insomnia>.fromOpaque(context!).takeUnretainedValue().refresh() }
+        }, Unmanaged.passUnretained(self).toOpaque()).takeRetainedValue()
+        CFRunLoopAddSource(CFRunLoopGetMain(), powerSource, .commonModes)
+        _ = NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil,
+                                                   queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
     }
 
     var sleepsAt: Date? {
@@ -53,6 +61,9 @@ final class Insomnia {
     func refresh() {
         let now = Date.now
         agents = mode == .agents && (isOn || isWatching) ? monitor.scan(now: now) : []
+        #if DEBUG
+        if let demoAgents { agents = demoAgents }
+        #endif
         if agents.contains(where: \.isWorking) { lastWork = now }
         pause = isOn ? Power.pause : nil
 
@@ -64,21 +75,39 @@ final class Insomnia {
         } else if !awake, awakeSince != nil {
             awakeSince = nil
             power.release()
+        } else if awake {
+            power.reassert()
         }
 
-        if isOn || isWatching {
-            if timer == nil {
-                let timer = Timer(timeInterval: 5, repeats: true) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.refresh() }
-                }
-                RunLoop.main.add(timer, forMode: .common)
-                self.timer = timer
-            }
-        } else {
-            timer?.invalidate()
-            timer = nil
-        }
+        schedule()
         onChange()
+    }
+
+    /// Work shows as change between two scans, so a first look at agents gets a second one right away
+    /// rather than at the next poll, in case the lid is about to close.
+    private func rescanSoon() {
+        guard mode == .agents, isOn || isWatching else { return }
+        let rescan = Timer(timeInterval: 1, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+        RunLoop.main.add(rescan, forMode: .common)
+    }
+
+    /// Polls agents only while Insomnia relies on them: every 10 s to catch them starting, every 30 s
+    /// while they work, since the grace period makes noticing the end later harmless. Livelier while the menu shows them.
+    private func schedule() {
+        let interval: TimeInterval? = isWatching ? 3 : isOn && mode == .agents ? (awakeSince == nil ? 10 : 30) : nil
+        guard timer?.timeInterval != interval else { return }
+        timer?.invalidate()
+        timer = nil
+        guard let interval else { return }
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+        // Lets macOS bundle the wakeup with others.
+        timer.tolerance = interval / 5
+        RunLoop.main.add(timer, forMode: .common)
+        self.timer = timer
     }
 
     func shutDown() {
