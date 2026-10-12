@@ -21,3 +21,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: scripts/build.sh release
+      - run: scripts/verify.sh
+      # ditto keeps the executable bit and the signature, which the artifact zip drops.
+      - run: ditto -c -k --keepParent build/release/Insomnia.app Insomnia.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          name: Insomnia
+          path: Insomnia.zip
+          retention-days: 14
