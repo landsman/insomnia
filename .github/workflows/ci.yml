@@ -22,10 +22,11 @@ jobs:
       - uses: actions/checkout@v7
       - run: scripts/build.sh release
       - run: scripts/verify.sh
-      # ditto keeps the executable bit and the signature, which the artifact zip drops.
+      # ditto keeps the executable bit and the signature, which the artifact zip drops;
+      # archive: false uploads that zip as-is instead of zipping it again.
       - run: ditto -c -k --keepParent build/release/Insomnia.app Insomnia.zip
       - uses: actions/upload-artifact@v7
         with:
-          name: Insomnia
           path: Insomnia.zip
+          archive: false
           retention-days: 14
