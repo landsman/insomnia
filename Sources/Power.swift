@@ -77,13 +77,21 @@ final class Power {
               lidClosedUndocked: lidClosedUndocked)
     }
 
-    /// Leaving with the Mac lets it sleep. Heat has the last word either way: a closed lid away from a dock,
-    /// which a bag cannot cool, pauses at serious, anything else at critical.
+    /// Leaving with the Mac lets it sleep. Heat has the last word either way: critical anywhere, and with the bag
+    /// safeguard on, serious with the lid closed away from a dock, for the bags the detector misses. With it off,
+    /// Insomnia behaves as it always has.
     nonisolated static func pause(thermal: ProcessInfo.ThermalState, batteryLow: Bool, leaving: Bool,
                                   lidClosedUndocked: Bool) -> Pause? {
         if leaving { return .bag }
         if thermal.rawValue >= (lidClosedUndocked ? ProcessInfo.ThermalState.serious : .critical).rawValue { return .heat }
         return batteryLow ? .battery : nil
+    }
+
+    /// With the bag safeguard on, a pause for heat or a bag with the lid closed holds until the lid opens or a display
+    /// is plugged in, so a wake after cooling down never holds the Mac awake in the bag again.
+    nonisolated static func latch(_ current: Pause?, latched: Pause?, lidClosedUndocked: Bool, watchesForBag: Bool) -> Pause? {
+        guard watchesForBag, lidClosedUndocked else { return nil }
+        return latched ?? (current == .heat || current == .bag ? current : nil)
     }
 
     private static var batteryLow: Bool {

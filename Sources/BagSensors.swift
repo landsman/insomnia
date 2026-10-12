@@ -3,30 +3,36 @@ import Foundation
 import IOKit
 import IOKit.hid
 import Network
+import os
 import SystemConfiguration
 
 /// Reads what BagDetector weighs, and the lid that Power.pause weighs for heat. The accelerometer only runs
-/// while the lid is closed with no external display and Insomnia holds the Mac awake, the one case where a bag is possible.
+/// while the lid is closed with no external display and Insomnia holds the Mac awake, the one case where a bag
+/// is possible, and the network is only watched while the setting is on.
 @MainActor
 final class BagSensors {
     private static let rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
     private let store = SCDynamicStoreCreate(nil, "Insomnia" as CFString, nil, nil)
     private let motion = Motion()
-    private let path = NWPathMonitor()
+    private var path: NWPathMonitor?
     /// A phone's hotspot, which macOS marks as an expensive path.
     private var hotspot = false
 
-    init() {
-        path.pathUpdateHandler = { [weak self] path in
-            MainActor.assumeIsolated { self?.hotspot = path.isExpensive }
-        }
-        path.start(queue: .main)
-    }
+    /// Intel Macs and the 2020 M1 MacBook Pro have no accelerometer, and then a bag cannot be told.
+    static let hasMotionSensor = Motion.driver.map { IOObjectRelease($0); return true } ?? false
 
     /// Closed with no external display, so not a Mac docked in clamshell mode.
     static var lidClosedUndocked: Bool { lidClosed && !externalDisplay }
 
     func read(watchMotion: Bool) -> BagDetector.Reading {
+        if path == nil {
+            let path = NWPathMonitor()
+            path.pathUpdateHandler = { [weak self] path in
+                MainActor.assumeIsolated { self?.hotspot = path.isExpensive }
+            }
+            path.start(queue: .main)
+            self.path = path
+        }
         let reading = BagDetector.Reading(lidClosed: Self.lidClosed, externalDisplay: Self.externalDisplay,
                                           carriedSeconds: motion.carriedSeconds, onEdge: motion.onEdge, router: router,
                                           hotspot: hotspot, thermal: ProcessInfo.processInfo.thermalState)
@@ -34,8 +40,13 @@ final class BagSensors {
         return reading
     }
 
-    func stop() {
+    /// Stops the accelerometer, and with `network` the network watch too, for when the setting goes off.
+    func stop(network: Bool = false) {
         motion.stop()
+        guard network else { return }
+        path?.cancel()
+        path = nil
+        hotspot = false
     }
 
     private static var lidClosed: Bool {
@@ -61,44 +72,56 @@ final class BagSensors {
 /// The accelerometer Apple silicon MacBooks have behind their Sensor Processing Unit. Apple does not document it:
 /// it is the HID device on vendor page 0xFF00, usage 3, and stays silent until its driver is told to report.
 /// Reports are 22 bytes with x, y and z as little-endian Int32 at offsets 6, 10 and 14, in 1/65536 g.
-/// Intel Macs and the 2020 M1 MacBook Pro lack it, and then carrying simply never counts.
 @MainActor
 private final class Motion {
-    private static let usagePage = 0xFF00, usage = 3
+    nonisolated private static let usagePage = 0xFF00, usage = 3
+    private static let log = Logger(subsystem: "com.michalptacek.insomnia", category: "bag")
+    /// What the driver reported with before Insomnia woke it, put back when it stops.
+    private static let reportingKeys = ["SensorPropertyReportingState", "SensorPropertyPowerState", "ReportInterval"]
     private var manager: IOHIDManager?
     private var timer: Timer?
     private var window = MotionWindow()
+    private var original: [String: Int] = [:]
     private let report = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)
-    /// Set once a Mac turns out to have no accelerometer, so it is not looked for again on every poll.
-    private var unsupported = false
+    /// Only grows, so a restart of the sensor never loses carrying the detector has not read yet.
     private(set) var carriedSeconds = 0
     var onEdge: Bool { window.onEdge }
 
-    func start() {
-        guard manager == nil, !unsupported else { return }
-        // Only the accelerometer's driver: its siblings serve the lid angle and other sensors macOS relies on.
+    /// The accelerometer's driver, of the several behind the SPU: its siblings serve the lid angle and other
+    /// sensors macOS relies on. The caller releases it.
+    nonisolated static var driver: io_object_t? {
         var drivers: io_iterator_t = 0
         IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("AppleSPUHIDDriver"), &drivers)
-        var found = false
+        defer { IOObjectRelease(drivers) }
         while case let driver = IOIteratorNext(drivers), driver != 0 {
-            defer { IOObjectRelease(driver) }
-            func property(_ key: String) -> Int? {
-                IORegistryEntryCreateCFProperty(driver, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int
-            }
-            guard property("PrimaryUsagePage") == Self.usagePage, property("PrimaryUsage") == Self.usage else { continue }
-            // 100 reports a second, the rate the thresholds in MotionWindow were measured at.
-            for (key, value) in [("SensorPropertyReportingState", 1), ("SensorPropertyPowerState", 1), ("ReportInterval", 10_000)] {
-                IORegistryEntrySetCFProperty(driver, key as CFString, value as CFNumber)
-            }
-            found = true
+            if property(driver, "PrimaryUsagePage") == usagePage, property(driver, "PrimaryUsage") == usage { return driver }
+            IOObjectRelease(driver)
         }
-        IOObjectRelease(drivers)
+        return nil
+    }
+
+    nonisolated private static func property(_ driver: io_object_t, _ key: String) -> Int? {
+        IORegistryEntryCreateCFProperty(driver, key as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Int
+    }
+
+    func start() {
+        guard manager == nil, BagSensors.hasMotionSensor, let driver = Self.driver else { return }
+        defer { IOObjectRelease(driver) }
+        original = Dictionary(uniqueKeysWithValues: Self.reportingKeys.map { ($0, Self.property(driver, $0) ?? 0) })
+        // 100 reports a second, the rate the thresholds in MotionWindow were measured at.
+        for (key, value) in zip(Self.reportingKeys, [1, 1, 10_000]) {
+            IORegistryEntrySetCFProperty(driver, key as CFString, value as CFNumber)
+        }
 
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, 0)
         IOHIDManagerSetDeviceMatching(manager, [kIOHIDPrimaryUsagePageKey: Self.usagePage, kIOHIDPrimaryUsageKey: Self.usage] as CFDictionary)
-        let devices = IOHIDManagerOpen(manager, 0) == kIOReturnSuccess ? IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> ?? [] : []
-        guard found, !devices.isEmpty else {
-            unsupported = true
+        let opened = IOHIDManagerOpen(manager, 0)
+        let devices = opened == kIOReturnSuccess ? IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> ?? [] : []
+        // Right after a wake the device may not be back yet; the next poll tries again.
+        guard !devices.isEmpty else {
+            Self.log.info("Accelerometer not ready: open returned \(opened), \(devices.count) devices")
+            IOHIDManagerClose(manager, 0)
+            restore(driver)
             return
         }
         let context = Unmanaged.passUnretained(self).toOpaque()
@@ -123,11 +146,11 @@ private final class Motion {
                 if self.window.tick() { self.carriedSeconds += 1 }
             }
         }
+        timer.tolerance = 0.1
         RunLoop.main.add(timer, forMode: .common)
         self.timer = timer
     }
 
-    /// ponytail: leaves the accelerometer's driver reporting, since other clients may rely on it.
     func stop() {
         guard let manager else { return }
         IOHIDManagerUnscheduleFromRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue)
@@ -136,6 +159,13 @@ private final class Motion {
         timer?.invalidate()
         timer = nil
         window = MotionWindow()
-        carriedSeconds = 0
+        if let driver = Self.driver {
+            restore(driver)
+            IOObjectRelease(driver)
+        }
+    }
+
+    private func restore(_ driver: io_object_t) {
+        for (key, value) in original { IORegistryEntrySetCFProperty(driver, key as CFString, value as CFNumber) }
     }
 }

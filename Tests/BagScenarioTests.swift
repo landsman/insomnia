@@ -3,7 +3,8 @@ import Testing
 @testable import Insomnia
 
 /// Replays the use cases from docs/bag-detection.md against BagWeights, the way Insomnia polls: every 30 s
-/// from the moment the lid closes. When a weight changes, this says which use case it broke.
+/// from the moment the lid closes. When a weight changes, this says which use case it broke. It checks the
+/// weights, not the timing in the app, where the sensor needs 15 s of walking before it counts.
 @Suite struct BagScenarioTests {
     /// What the Mac goes through for one minute with the lid closed.
     struct Minute {
@@ -23,43 +24,56 @@ import Testing
     }
 
     static let office = "10.0.0.1"
+    static let otherBuilding = "10.9.0.1"
     static let phone = "172.20.10.1"
 
-    static func repeated(_ minute: Minute, _ count: Int) -> [Minute] { Array(repeating: minute, count: count) }
+    static func minutes(_ count: Int, _ minute: Minute = Minute()) -> [Minute] { Array(repeating: minute, count: count) }
 
     static let scenarios: [Scenario] = [
         Scenario(name: "2 min to a meeting room with an access point switch, then an hour there",
-                 minutes: repeated(Minute(carried: true), 1) + [Minute(carried: true, router: nil)]
-                     + repeated(Minute(), 60),
+                 minutes: minutes(1, Minute(carried: true)) + minutes(1, Minute(carried: true, router: nil)) + minutes(60),
                  sleeps: nil),
         Scenario(name: "2 min to a meeting room on a hotspot, on its edge, then an hour there",
-                 minutes: repeated(Minute(carried: true, onEdge: true, router: phone, hotspot: true), 2)
-                     + repeated(Minute(router: phone, hotspot: true), 60),
+                 minutes: minutes(2, Minute(carried: true, onEdge: true, router: phone, hotspot: true))
+                     + minutes(60, Minute(router: phone, hotspot: true)),
+                 sleeps: nil),
+        Scenario(name: "4 min to a meeting room in another building on another network, warm, then an hour there",
+                 minutes: minutes(2, Minute(carried: true, thermal: .fair))
+                     + minutes(2, Minute(carried: true, router: otherBuilding, thermal: .fair))
+                     + minutes(60, Minute(router: otherBuilding, thermal: .fair)),
                  sleeps: nil),
         Scenario(name: "6 min across the campus in the hand, same office network, then a meeting",
-                 minutes: repeated(Minute(carried: true), 6) + repeated(Minute(), 60),
+                 minutes: minutes(6, Minute(carried: true)) + minutes(60),
                  sleeps: nil),
-        Scenario(name: "Closed on the desk under load, warm, for an hour",
-                 minutes: repeated(Minute(thermal: .fair), 60),
+        Scenario(name: "Four 2 min carries through a morning, warm on a vertical stand in between",
+                 minutes: Array((0..<4).map { _ in
+                     minutes(2, Minute(carried: true, onEdge: true, thermal: .fair)) + minutes(30, Minute(onEdge: true, thermal: .fair))
+                 }.joined()),
+                 sleeps: nil),
+        Scenario(name: "Closed on a vertical stand under load, warm, for an hour",
+                 minutes: minutes(60, Minute(onEdge: true, thermal: .fair)),
                  sleeps: nil),
         Scenario(name: "Leaving the office on Wi-Fi: walking on its edge, network gone after a minute",
-                 minutes: [Minute(carried: true, onEdge: true)] + repeated(Minute(carried: true, onEdge: true, router: nil), 20),
+                 minutes: minutes(1, Minute(carried: true, onEdge: true)) + minutes(20, Minute(carried: true, onEdge: true, router: nil)),
+                 sleeps: 2...3),
+        Scenario(name: "Leaving the office on Wi-Fi with the bag lying flat",
+                 minutes: minutes(1, Minute(carried: true)) + minutes(20, Minute(carried: true, router: nil)),
                  sleeps: 3...4),
         Scenario(name: "Leaving the office, Wi-Fi handing over to the phone's hotspot outside",
-                 minutes: [Minute(carried: true, onEdge: true)]
-                     + repeated(Minute(carried: true, onEdge: true, router: phone, hotspot: true), 20),
-                 sleeps: 3...4),
+                 minutes: minutes(1, Minute(carried: true, onEdge: true))
+                     + minutes(20, Minute(carried: true, onEdge: true, router: phone, hotspot: true)),
+                 sleeps: 2...3),
         Scenario(name: "Leaving on a hotspot: walking on its edge",
-                 minutes: repeated(Minute(carried: true, onEdge: true, router: phone, hotspot: true), 20),
+                 minutes: minutes(20, Minute(carried: true, onEdge: true, router: phone, hotspot: true)),
                  sleeps: 8...9),
         Scenario(name: "Leaving on a hotspot: walking on its edge and warming up",
-                 minutes: repeated(Minute(carried: true, onEdge: true, router: phone, hotspot: true), 2)
-                     + repeated(Minute(carried: true, onEdge: true, router: phone, hotspot: true, thermal: .fair), 20),
+                 minutes: minutes(2, Minute(carried: true, onEdge: true, router: phone, hotspot: true))
+                     + minutes(20, Minute(carried: true, onEdge: true, router: phone, hotspot: true, thermal: .fair)),
                  sleeps: 5...6),
-        Scenario(name: "Walked 4 min out of the office on its edge, then the bag rests on the floor of a car",
-                 minutes: [Minute(carried: true, onEdge: true)] + repeated(Minute(carried: true, onEdge: true, router: nil), 3)
-                     + repeated(Minute(onEdge: true, router: nil), 30),
-                 sleeps: 3...4),
+        Scenario(name: "Walked 4 min out of the office on its edge, then the bag rests in a car",
+                 minutes: minutes(1, Minute(carried: true, onEdge: true)) + minutes(3, Minute(carried: true, onEdge: true, router: nil))
+                     + minutes(30, Minute(onEdge: true, router: nil)),
+                 sleeps: 2...3),
     ]
 
     /// When the Mac fell asleep, in minutes after the lid closed, or nil.

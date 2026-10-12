@@ -134,6 +134,10 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         case .bag: return "Paused while your Mac seems to be in a bag"
         case nil: break
         }
+        if let slept = insomnia.lastSleep, slept.until > .now {
+            let at = slept.at.formatted(date: .omitted, time: .shortened)
+            return slept.pause == .bag ? "Slept at \(at) when you left with it" : "Slept at \(at) to cool down"
+        }
         guard let since = insomnia.awakeSince else { return "Waiting for work" }
         if let sleepsAt = insomnia.sleepsAt {
             return "Work is done, sleep in \(max(1, Int((sleepsAt.timeIntervalSinceNow / 60).rounded(.up)))) min"

@@ -14,22 +14,18 @@ private func reading(lidClosed: Bool = true, externalDisplay: Bool = false, carr
           router: router, hotspot: hotspot, thermal: thermal)
 }
 
-/// A detector that saw the lid close at `closed`.
-private func detector() -> BagDetector {
+/// A detector that saw the lid close at `closed` and then a minute of carrying.
+private func carriedAMinute() -> BagDetector {
     var detector = BagDetector()
     detector.update(reading(), now: closed)
+    detector.update(reading(carriedSeconds: 60), now: closed + 60)
     return detector
 }
 
 @Suite struct BagDetectorTests {
-    @Test func closedAndStillScoresNothing() {
-        var detector = detector()
-        detector.update(reading(), now: closed + 3600)
-        #expect(detector.score == 0)
-    }
-
-    @Test func carryingScoresByHowLong() {
-        var detector = detector()
+    @Test func carryingScoresByHowLongTheTripLasts() {
+        var detector = BagDetector()
+        detector.update(reading(), now: closed)
         detector.update(reading(carriedSeconds: 59), now: closed + 60)
         #expect(detector.score == 0)
         detector.update(reading(carriedSeconds: 60), now: closed + 90)
@@ -38,73 +34,106 @@ private func detector() -> BagDetector {
         #expect(detector.score == 60)
     }
 
-    /// Insomnia restarts the sensor after a sleep or a lid message, and its count with it.
-    @Test func carryingAddsUpAcrossSensorRestarts() {
-        var detector = detector()
-        detector.update(reading(carriedSeconds: 120), now: closed + 150)
-        detector.update(reading(carriedSeconds: 60), now: closed + 240)
+    /// The sensor counts from whenever it started, which may be long before this lid close.
+    @Test func theFirstReadingIsOnlyABaseline() {
+        var detector = BagDetector()
+        detector.update(reading(carriedSeconds: 5000), now: closed)
+        detector.update(reading(carriedSeconds: 5000), now: closed + 600)
+        #expect(detector.score == 0)
+    }
+
+    /// Short carries through a day never add up to the way home.
+    @Test func aLongStillnessStartsANewTrip() {
+        var detector = carriedAMinute()
+        detector.update(reading(carriedSeconds: 120), now: closed + 120)
+        detector.update(reading(carriedSeconds: 120), now: closed + 3600)
+        detector.update(reading(carriedSeconds: 180), now: closed + 3660)
+        #expect(detector.score == 15)
+    }
+
+    /// A lift or a door stops the walk for less than the gap.
+    @Test func aShortStopKeepsTheTripGoing() {
+        var detector = carriedAMinute()
+        detector.update(reading(carriedSeconds: 120), now: closed + 120)
+        detector.update(reading(carriedSeconds: 180), now: closed + 300)
         #expect(detector.score == 30)
     }
 
-    /// A bag set down reads like a desk, so carrying counts until the lid opens.
-    @Test func carryingIsRememberedWhileTheBagRests() {
-        var detector = detector()
+    /// A bag set down reads like a desk, so the trip counts until the lid opens.
+    @Test func theTripIsRememberedWhileTheBagRests() {
+        var detector = carriedAMinute()
         detector.update(reading(carriedSeconds: 200), now: closed + 240)
         detector.update(reading(carriedSeconds: 200), now: closed + 4 * 3600)
         #expect(detector.score == 30)
     }
 
-    @Test func aNetworkGoneForAMinuteCountsAndASecondsLongDropDoesNot() {
-        var detector = detector()
-        detector.update(reading(router: nil), now: closed + 30)
-        detector.update(reading(router: nil), now: closed + 60)
-        #expect(detector.score == 0)
-        detector.update(reading(router: nil), now: closed + 90)
-        #expect(detector.score == weights.leftNetwork)
-        detector.update(reading(), now: closed + 120)
+    /// A vertical stand and a warm Mac on a desk never score on their own.
+    @Test func nothingCountsBeforeTheMacWasCarried() {
+        var detector = BagDetector()
+        detector.update(reading(), now: closed)
+        detector.update(reading(onEdge: true, router: nil, thermal: .fair), now: closed + 3600)
         #expect(detector.score == 0)
     }
 
-    @Test func anotherNetworkCountsLikeNone() {
-        var detector = detector()
-        detector.update(reading(router: "192.168.1.1"), now: closed + 30)
-        detector.update(reading(router: "192.168.1.1"), now: closed + 90)
-        #expect(detector.score == weights.leftNetwork)
+    @Test func aNetworkGoneForAMinuteCountsAndASecondsLongDropDoesNot() {
+        var detector = carriedAMinute()
+        detector.update(reading(carriedSeconds: 60, router: nil), now: closed + 90)
+        detector.update(reading(carriedSeconds: 60, router: nil), now: closed + 120)
+        #expect(detector.score == 15)
+        detector.update(reading(carriedSeconds: 60, router: nil), now: closed + 150)
+        #expect(detector.score == 15 + weights.lostNetwork)
+        detector.update(reading(carriedSeconds: 60), now: closed + 180)
+        #expect(detector.score == 15)
+    }
+
+    @Test func anotherNetworkCountsLessThanNone() {
+        var detector = carriedAMinute()
+        detector.update(reading(carriedSeconds: 60, router: "10.9.0.1"), now: closed + 90)
+        detector.update(reading(carriedSeconds: 60, router: "10.9.0.1"), now: closed + 150)
+        #expect(detector.score == 15 + weights.otherNetwork)
+    }
+
+    /// Off the office Wi-Fi onto a phone's hotspot is how leaving looks for someone who tethers.
+    @Test func movingOntoAHotspotCountsAsLosingTheNetwork() {
+        var detector = carriedAMinute()
+        detector.update(reading(carriedSeconds: 60, router: "172.20.10.1", hotspot: true), now: closed + 90)
+        detector.update(reading(carriedSeconds: 60, router: "172.20.10.1", hotspot: true), now: closed + 150)
+        #expect(detector.score == 15 + weights.lostNetwork)
     }
 
     /// A hotspot travels along, so closing on one leaves the network out entirely.
     @Test func closedOnAHotspotTheNetworkNeverCounts() {
         var detector = BagDetector()
         detector.update(reading(router: "172.20.10.1", hotspot: true), now: closed)
-        detector.update(reading(router: nil), now: closed + 30)
-        detector.update(reading(router: nil), now: closed + 300)
-        #expect(detector.score == 0)
+        detector.update(reading(carriedSeconds: 60, router: nil), now: closed + 60)
+        detector.update(reading(carriedSeconds: 60, router: nil), now: closed + 300)
+        #expect(detector.score == 15)
     }
 
     @Test func closedWithoutANetworkTheNetworkNeverCounts() {
         var detector = BagDetector()
         detector.update(reading(router: nil), now: closed)
-        detector.update(reading(), now: closed + 30)
-        detector.update(reading(), now: closed + 300)
-        #expect(detector.score == 0)
+        detector.update(reading(carriedSeconds: 60), now: closed + 60)
+        detector.update(reading(carriedSeconds: 60), now: closed + 300)
+        #expect(detector.score == 15)
     }
 
-    @Test func edgeAndWarmthAddTheirWeights() {
-        var detector = detector()
-        detector.update(reading(onEdge: true, thermal: .fair), now: closed + 30)
-        #expect(detector.score == weights.onEdge + weights.warm)
+    @Test func edgeAndWarmthAddTheirWeightsOnceCarried() {
+        var detector = carriedAMinute()
+        detector.update(reading(carriedSeconds: 60, onEdge: true, thermal: .fair), now: closed + 90)
+        #expect(detector.score == 15 + weights.onEdge + weights.warm)
     }
 
     @Test(arguments: [reading(lidClosed: false), reading(externalDisplay: true)])
     func anOpenLidOrADisplayForgetsEverything(_ desk: BagDetector.Reading) {
-        var detector = detector()
+        var detector = carriedAMinute()
         detector.update(reading(carriedSeconds: 600, onEdge: true, router: nil, thermal: .fair), now: closed + 600)
         #expect(detector.isLeaving)
         detector.update(desk, now: closed + 630)
         #expect(detector.score == 0)
         // Closed again elsewhere: its network is the new normal, and the walk there is forgotten.
-        detector.update(reading(router: "192.168.1.1"), now: closed + 660)
-        detector.update(reading(carriedSeconds: 30, router: "192.168.1.1"), now: closed + 900)
+        detector.update(reading(carriedSeconds: 600, router: "10.9.0.1"), now: closed + 660)
+        detector.update(reading(carriedSeconds: 630, router: "10.9.0.1"), now: closed + 900)
         #expect(detector.score == 0)
     }
 
@@ -113,7 +142,8 @@ private func detector() -> BagDetector {
         light.onEdge = 70
         var detector = BagDetector(weights: light)
         detector.update(reading(), now: closed)
-        let leaving = detector.update(reading(onEdge: true), now: closed + 30)
+        detector.update(reading(carriedSeconds: 60), now: closed + 60)
+        let leaving = detector.update(reading(carriedSeconds: 60, onEdge: true), now: closed + 90)
         #expect(leaving)
     }
 }
@@ -199,5 +229,23 @@ private func detector() -> BagDetector {
     @Test func lowBatteryPausesAsBefore() {
         #expect(pause(.nominal, batteryLow: true) == .battery)
         #expect(pause(.nominal) == nil)
+    }
+
+    /// Cooled down with the lid still closed, it stays asleep in the bag.
+    @Test func aHeatOrBagPauseHoldsUntilTheLidOpens() {
+        #expect(Power.latch(.heat, latched: nil, lidClosedUndocked: true, watchesForBag: true) == .heat)
+        #expect(Power.latch(nil, latched: .heat, lidClosedUndocked: true, watchesForBag: true) == .heat)
+        #expect(Power.latch(nil, latched: .bag, lidClosedUndocked: true, watchesForBag: true) == .bag)
+        #expect(Power.latch(nil, latched: .heat, lidClosedUndocked: false, watchesForBag: true) == nil)
+    }
+
+    @Test func aBatteryPauseIsNeverHeld() {
+        #expect(Power.latch(.battery, latched: nil, lidClosedUndocked: true, watchesForBag: true) == nil)
+    }
+
+    /// With the bag safeguard off, Insomnia behaves as it always has.
+    @Test func nothingIsHeldWithTheBagSafeguardOff() {
+        #expect(Power.latch(.heat, latched: nil, lidClosedUndocked: true, watchesForBag: false) == nil)
+        #expect(Power.latch(nil, latched: .heat, lidClosedUndocked: true, watchesForBag: false) == nil)
     }
 }

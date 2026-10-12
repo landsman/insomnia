@@ -2,35 +2,40 @@ import Foundation
 
 /// Tells leaving with the Mac in a bag from carrying it to a meeting room, both with the lid closed and no
 /// external display. No single sign decides, since each fails somewhere: a hotspot never loses its network,
-/// a long walk across a campus is still the office. So weighted signs add up, from BagWeights, and the Mac sleeps
-/// at its sleepAt.
+/// a long walk across a campus is still the office. So weighted signs from BagWeights add up, and the Mac
+/// sleeps at their sleepAt. Only the latest trip counts, so short carries through a day never add up, and
+/// nothing counts before the Mac was carried at all, so a desk never scores.
 /// docs/bag-detection.md has the reasoning and the scenarios, which BagScenarioTests replays.
 struct BagDetector {
     struct Reading {
         var lidClosed: Bool
         var externalDisplay: Bool
-        /// Seconds the Mac has been carried since the motion sensor started, see MotionWindow.
+        /// Seconds the motion sensor has found the Mac carried, ever; see MotionWindow.
         var carriedSeconds: Int
         /// Standing rather than lying, as in a backpack.
         var onEdge: Bool
         /// The network's router, nil without a network.
         var router: String?
-        /// A phone's hotspot, which travels along and so never shows leaving.
+        /// A phone's hotspot, which travels along.
         var hotspot: Bool
         var thermal: ProcessInfo.ThermalState
     }
 
+    /// Stillness that ends a trip. Shorter, as for a lift or a door, and the walk goes on.
+    static let tripGap: TimeInterval = 3 * 60
     /// Roaming between access points drops the network for seconds, leaving the building for good.
     static let networkChangedFor: TimeInterval = 60
 
+    let weights: BagWeights
     private var closed = false
     private var routerAtClose: String?
     private var closedOnHotspot = false
     private var changedSince: Date?
-    private var carried: TimeInterval = 0
-    private var lastCarriedSeconds = 0
+    private var lastCarriedSeconds: Int?
+    private var lastCarriedAt: Date?
+    /// The latest trip, remembered until the next one or the lid opening: a bag set down reads like a desk.
+    private var trip: TimeInterval = 0
 
-    let weights: BagWeights
     private(set) var score = 0
     var isLeaving: Bool { score >= weights.sleepAt }
 
@@ -49,15 +54,23 @@ struct BagDetector {
             routerAtClose = reading.router
             closedOnHotspot = reading.hotspot
         }
-        // The sensor's count starts over whenever it does; carrying is remembered until the lid opens,
-        // since a bag set down reads like a desk to the accelerometer.
-        carried += TimeInterval(reading.carriedSeconds >= lastCarriedSeconds ? reading.carriedSeconds - lastCarriedSeconds : reading.carriedSeconds)
-        lastCarriedSeconds = reading.carriedSeconds
-        changedSince = reading.router == routerAtClose ? nil : changedSince ?? now
 
-        score = weights.carried.filter { carried >= $0.minutes * 60 }.map(\.points).max() ?? 0
-        if let changedSince, routerAtClose != nil, !closedOnHotspot, now.timeIntervalSince(changedSince) >= Self.networkChangedFor {
-            score += weights.leftNetwork
+        // The sensor's count only grows; the first reading after the lid closed is the baseline.
+        let carried = TimeInterval(max(reading.carriedSeconds - (lastCarriedSeconds ?? reading.carriedSeconds), 0))
+        lastCarriedSeconds = reading.carriedSeconds
+        if carried > 0 {
+            if let lastCarriedAt, now.timeIntervalSince(lastCarriedAt) - carried > Self.tripGap { trip = 0 }
+            trip += carried
+            lastCarriedAt = now
+        }
+
+        changedSince = reading.router == routerAtClose && reading.hotspot == closedOnHotspot ? nil : changedSince ?? now
+        let changed = changedSince.map { now.timeIntervalSince($0) >= Self.networkChangedFor } ?? false
+
+        score = weights.carried.filter { trip >= $0.minutes * 60 }.map(\.points).max() ?? 0
+        guard score > 0 else { return false }
+        if changed, routerAtClose != nil, !closedOnHotspot {
+            score += reading.router == nil || reading.hotspot ? weights.lostNetwork : weights.otherNetwork
         }
         if reading.onEdge { score += weights.onEdge }
         if reading.thermal.rawValue >= ProcessInfo.ThermalState.fair.rawValue { score += weights.warm }

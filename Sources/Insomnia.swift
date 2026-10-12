@@ -51,6 +51,10 @@ final class Insomnia {
     /// Whether the last look found the lid closed with no external display, the only time the Mac can be carried off.
     private var watchingBag = false
     private var latched: Power.Pause?
+    private var latchedAt: Date?
+    private var lastScan: Date?
+    /// Why and when the Mac last slept for a bag or heat, shown in the menu until `until`.
+    private(set) var lastSleep: (pause: Power.Pause, at: Date, until: Date)?
     private let defaults: UserDefaults
     private var timer: Timer?
 
@@ -73,19 +77,24 @@ final class Insomnia {
                                                    queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
         }
-        // The lid closing and opening arrive as messages from the power manager, as do sleep and wake,
-        // after which the accelerometer is set up afresh.
+        // The lid closing and opening arrive as kIOPMMessageClamshellStateChange from the power manager. Nothing
+        // else it says matters here, and refreshing on all of it would rescan for work on every assertion change.
         let port = IONotificationPortCreate(kIOMainPortDefault)
         IONotificationPortSetDispatchQueue(port, .main)
         var lidNotification: io_object_t = 0
         IOServiceAddInterestNotification(port, IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain")),
-                                         "IOGeneralInterest", { context, _, _, _ in
-            MainActor.assumeIsolated {
-                let insomnia = Unmanaged<Insomnia>.fromOpaque(context!).takeUnretainedValue()
-                insomnia.bagSensors.stop()
-                insomnia.refresh()
-            }
+                                         "IOGeneralInterest", { context, _, message, _ in
+            guard message == 0xE003_4100 else { return }
+            MainActor.assumeIsolated { Unmanaged<Insomnia>.fromOpaque(context!).takeUnretainedValue().refresh() }
         }, Unmanaged.passUnretained(self).toOpaque(), &lidNotification)
+        // After a wake the accelerometer is set up afresh by the next look, in case its driver forgot.
+        _ = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
+                                                              queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.bagSensors.stop()
+                self?.refresh()
+            }
+        }
         // A chosen app counts from the moment it opens, not from the next poll.
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             _ = NSWorkspace.shared.notificationCenter.addObserver(forName: name, object: nil, queue: .main) { [weak self] note in
@@ -109,7 +118,9 @@ final class Insomnia {
 
     func refresh() {
         let now = Date.now
-        if mode == .working && (isOn || isWatching) {
+        // A lid or wake message can land right after another look; too soon to measure work again.
+        if mode == .working && (isOn || isWatching) && lastScan.map({ now.timeIntervalSince($0) >= 0.5 }) ?? true {
+            lastScan = now
             let processes = Processes.current()
             agents = agentMonitor.scan(processes, now: now)
             apps = appMonitor.scan(processes, ignoring: agentMonitor.involved, now: now)
@@ -119,7 +130,7 @@ final class Insomnia {
             }
             let rate = appMonitor.uploadRate(now: now)
             upload = rate >= AppMonitor.uploadBytesPerSecond ? rate : 0
-        } else {
+        } else if !(mode == .working && (isOn || isWatching)) {
             (agents, apps, upload) = ([], [], 0)
         }
         #if DEBUG
@@ -128,9 +139,12 @@ final class Insomnia {
         if isWorking { lastWork = now }
         if isOn {
             var leaving = false
+            let lidClosed: Bool
             if watchesForBag {
                 let reading = bagSensors.read(watchMotion: awakeSince != nil)
-                watchingBag = reading.lidClosed && !reading.externalDisplay
+                lidClosed = reading.lidClosed && !reading.externalDisplay
+                // Docked with the lid closed too, so unplugging the display and walking off is noticed.
+                watchingBag = reading.lidClosed
                 let score = bagDetector.score
                 leaving = bagDetector.update(reading, now: now)
                 if bagDetector.score != score {
@@ -139,13 +153,15 @@ final class Insomnia {
                 }
             } else {
                 forgetBag()
-                if latched == .bag { latched = nil }
+                lidClosed = BagSensors.lidClosedUndocked
             }
-            let lidClosed = BagSensors.lidClosedUndocked
-            let current = Power.pause(leaving: leaving, lidClosedUndocked: lidClosed)
-            // Paused for heat or a bag with the lid closed, it stays paused until the lid opens or a display is
-            // plugged in, so a wake after it cooled down never holds it awake in the bag again.
-            if !lidClosed { latched = nil } else if latched == nil, current == .heat || current == .bag { latched = current }
+            let current = Power.pause(leaving: leaving, lidClosedUndocked: watchesForBag && lidClosed)
+            let wasLatched = latched
+            latched = Power.latch(current, latched: latched, lidClosedUndocked: lidClosed, watchesForBag: watchesForBag)
+            if wasLatched == nil, latched != nil { latchedAt = now }
+            // Opened again after sleeping for a bag or heat: the menu says so for a while, or nobody would know why.
+            if let wasLatched, latched == nil, !lidClosed, let latchedAt { lastSleep = (wasLatched, latchedAt, now + 15 * 60) }
+            if lidClosed { lastSleep = nil }
             pause = latched ?? current
         } else {
             forgetBag()
@@ -160,6 +176,7 @@ final class Insomnia {
             power.hold()
         } else if !awake, awakeSince != nil {
             awakeSince = nil
+            bagSensors.stop()
             power.release()
         } else if awake {
             power.reassert()
@@ -200,7 +217,7 @@ final class Insomnia {
     }
 
     private func forgetBag() {
-        bagSensors.stop()
+        bagSensors.stop(network: true)
         bagDetector = BagDetector()
         watchingBag = false
     }

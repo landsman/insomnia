@@ -46,8 +46,11 @@ struct SettingsView: View {
             Section {
                 Toggle("Sleep When Carried in a Bag", isOn: $watchesForBag)
                     .onChange(of: watchesForBag) { _, on in insomnia.watchesForBag = on }
+                    .disabled(!BagSensors.hasMotionSensor)
             } footer: {
-                Text("Close the lid and leave with your Mac, and it goes to sleep, safe in your bag. A walk to a meeting room keeps the work going.")
+                Text(BagSensors.hasMotionSensor
+                     ? "Close the lid and leave with your Mac, and it goes to sleep, safe in your bag. A walk to a meeting room keeps the work going."
+                     : "Needs the motion sensor of an Apple silicon MacBook, which this Mac does not have.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
