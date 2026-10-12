@@ -72,14 +72,17 @@ final class Power {
         holdLid()
     }
 
-    static func pause(bag: BagDetector.Level) -> Pause? {
-        pause(thermal: ProcessInfo.processInfo.thermalState, batteryLow: batteryLow, bag: bag)
+    static func pause(bag: BagDetector.Level, lidClosedUndocked: Bool) -> Pause? {
+        pause(thermal: ProcessInfo.processInfo.thermalState, batteryLow: batteryLow, bag: bag, lidClosedUndocked: lidClosedUndocked)
     }
 
-    /// A Mac that may be in a bag pauses a step earlier on heat, since a bag keeps it from cooling down.
-    nonisolated static func pause(thermal: ProcessInfo.ThermalState, batteryLow: Bool, bag: BagDetector.Level) -> Pause? {
+    /// Heat has the last word, and the likelier a bag the sooner: critical anywhere, serious with the lid closed
+    /// away from a dock, which a bag cannot cool, and fair once the Mac was carried.
+    nonisolated static func pause(thermal: ProcessInfo.ThermalState, batteryLow: Bool, bag: BagDetector.Level,
+                                  lidClosedUndocked: Bool) -> Pause? {
         if bag == .sleep { return .bag }
-        if thermal == .critical || bag == .careful && thermal == .serious { return .heat }
+        let limit: ProcessInfo.ThermalState = bag == .careful ? .fair : lidClosedUndocked ? .serious : .critical
+        if thermal.rawValue >= limit.rawValue { return .heat }
         return batteryLow ? .battery : nil
     }
 

@@ -3,7 +3,8 @@ import Foundation
 /// Tells a Mac carried off in a bag from one closed on a desk. Nothing says "bag" directly, so it adds up
 /// weighted signals, and only with the lid closed on battery with no external display: anything plugged in
 /// means a desk. Motion only shows that the Mac is being carried, and a bag set down looks like a desk to
-/// the accelerometer, so carrying is remembered until the lid opens again.
+/// the accelerometer, so carrying is remembered until the lid opens again. Heat is not scored here: it has
+/// the last word in Power.pause, at a lower threshold the likelier a bag is.
 struct BagDetector {
     struct Reading {
         var lidClosed: Bool
@@ -13,21 +14,20 @@ struct BagDetector {
         var carriedAt: Date?
         /// The network's router, nil without a network.
         var router: String?
-        var thermal: ProcessInfo.ThermalState
     }
 
     enum Level: Comparable { case none, careful, sleep }
 
     static let carriedWeight = 50
     static let networkWeight = 30
-    static let heatWeight = 20
-    /// Carrying it is enough to be careful; carrying plus a new network or heat puts it to sleep.
+    /// Carried is careful; carried off to another network, or off any network, is a bag.
     static let carefulScore = 50
     static let sleepScore = 80
-    /// A Mac carried half an hour ago with the lid shut ever since is still taken for one in a bag.
-    static let carriedMemory: TimeInterval = 30 * 60
+    /// Carrying only counts once it goes on this long after the lid closed, so a walk to a meeting room,
+    /// even one that switches the office network, never counts. A commute does.
+    static let grace: TimeInterval = 5 * 60
 
-    private var watching = false
+    private var closedAt: Date?
     /// The router when the lid closed. nil when there was no network then, which leaves the network out.
     private var routerAtClose: String?
     private var carriedAt: Date?
@@ -41,19 +41,18 @@ struct BagDetector {
     @discardableResult
     mutating func update(_ reading: Reading, now: Date = .now) -> Level {
         guard reading.lidClosed, reading.onBattery, !reading.externalDisplay else {
-            (watching, routerAtClose, carriedAt, score) = (false, nil, nil, 0)
+            (closedAt, routerAtClose, carriedAt, score) = (nil, nil, nil, 0)
             return level
         }
-        if !watching {
-            watching = true
+        if closedAt == nil {
+            closedAt = now
             routerAtClose = reading.router
         }
-        if let at = reading.carriedAt { carriedAt = max(at, carriedAt ?? at) }
+        if let at = reading.carriedAt, at >= closedAt! + Self.grace { carriedAt = max(at, carriedAt ?? at) }
 
         score = 0
-        if let carriedAt, now.timeIntervalSince(carriedAt) < Self.carriedMemory { score += Self.carriedWeight }
+        if carriedAt != nil { score += Self.carriedWeight }
         if let routerAtClose, reading.router != routerAtClose { score += Self.networkWeight }
-        if reading.thermal.rawValue >= ProcessInfo.ThermalState.fair.rawValue { score += Self.heatWeight }
         return level
     }
 }
@@ -67,19 +66,21 @@ struct MotionWindow {
     static let movingSeconds = 15
 
     private var seconds: [Bool] = []
-    private var samples: [Double] = []
+    // Running sums rather than the samples: they arrive 100 times a second.
+    private var count = 0.0, sum = 0.0, squares = 0.0
 
     /// Adds one acceleration magnitude, in g.
     mutating func add(_ magnitude: Double) {
-        samples.append(magnitude)
+        count += 1
+        sum += magnitude
+        squares += magnitude * magnitude
     }
 
     /// Closes the current second and says whether the Mac is being carried.
     mutating func tick() -> Bool {
-        let count = Double(samples.count)
-        let mean = samples.reduce(0, +) / max(count, 1)
-        let deviation = (samples.reduce(0) { $0 + ($1 - mean) * ($1 - mean) } / max(count, 1)).squareRoot()
-        samples.removeAll(keepingCapacity: true)
+        let mean = sum / max(count, 1)
+        let deviation = max(squares / max(count, 1) - mean * mean, 0).squareRoot()
+        (count, sum, squares) = (0, 0, 0)
         seconds.append(deviation > Self.movingDeviation)
         if seconds.count > Self.length { seconds.removeFirst() }
         return seconds.filter { $0 }.count >= Self.movingSeconds
