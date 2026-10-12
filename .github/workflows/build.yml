@@ -1,0 +1,20 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    paths: &app
+      - Sources/**
+      - Resources/**
+      - Support/**
+      - scripts/**
+      - .github/workflows/build.yml
+  pull_request:
+    paths: *app
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: scripts/build.sh release

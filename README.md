@@ -94,3 +94,4 @@ Insomnia is released under the [MIT License](LICENSE).
 ---
 
 <p align="center">Made by <a href="https://www.linkedin.com/in/michalptacek/">Michal Ptacek</a></p>
+
