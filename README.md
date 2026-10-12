@@ -62,9 +62,9 @@ Nothing else gets elevated.
 Safeguards:
 
 - If Insomnia quits or crashes, a watchdog restores normal sleep within milliseconds.
-- Below 10 % battery, or when the Mac runs too hot, Insomnia pauses.
+- Below 10 % battery, or when the Mac runs too hot, Insomnia pauses, and with the lid closed it stays paused until you open it.
 - When the work is done and the lid is closed, Insomnia puts the Mac to sleep rather than leaving it running in your bag.
-- Optional, off by default: **Sleep When Carried in a Bag** in Settings puts the Mac to sleep when it seems to be carried off in a bag with the lid closed.
+- Optional, off by default: **Sleep When Carried in a Bag** in Settings puts the Mac to sleep when it is carried off in a bag for more than 5 minutes after the lid closes, so a walk to a meeting room does not count.
 
 ## Light on resources
 
