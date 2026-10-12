@@ -13,7 +13,9 @@
   </picture>
 </p>
 
-Insomnia lives in the menu bar. Start an export, a render, an upload or a coding agent, close the lid and put the Mac in your bag. The work carries on, and the Mac goes to sleep once it is done.
+Insomnia lives in the menu bar. Start an export, a render, an upload or a coding agent, then close the lid or lock the screen and walk away. The work carries on, and the Mac goes to sleep once it is done.
+
+It is made for video editors waiting on an export, 3D artists rendering overnight, creators uploading a finished video and developers whose AI agents keep coding while they are away.
 
 ## Download
 
@@ -29,7 +31,7 @@ Insomnia now sits in the menu bar as a closed eye. Click it and flip the switch.
 
 - **While Working** keeps the Mac awake only while something is actually working, and lets it sleep 5 minutes after everything finishes.
 - **Until Turned Off** keeps it awake until you say otherwise.
-- The eye in the menu bar opens while Insomnia holds the Mac awake, and the menu shows what is working.
+- The eye in the menu bar opens while Insomnia holds the Mac awake. The menu lists what is working: apps with their icons, agents with their projects and uploads with their speed.
 
 While Working counts:
 
