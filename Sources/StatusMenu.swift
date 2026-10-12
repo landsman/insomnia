@@ -212,9 +212,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         style.alignment = .center
         let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
                                                          .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style]
-        let credits = NSMutableAttributedString(string: "Made by Michal Ptacek, founder of CzechCrunch\n", attributes: attributes)
-        credits.append(NSAttributedString(string: "michal@cc.cz",
-                                          attributes: attributes.merging([.link: URL(string: "mailto:michal@cc.cz")!]) { $1 }))
+        let credits = NSMutableAttributedString(string: "Made by Michal Ptacek, founder of ", attributes: attributes)
+        credits.append(NSAttributedString(string: "CzechCrunch",
+                                          attributes: attributes.merging([.link: URL(string: "https://cc.cz")!]) { $1 }))
         return credits
     }
 
