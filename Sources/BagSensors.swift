@@ -2,27 +2,35 @@ import CoreGraphics
 import Foundation
 import IOKit
 import IOKit.hid
-import IOKit.ps
+import Network
 import SystemConfiguration
 
 /// Reads what BagDetector weighs, and the lid that Power.pause weighs for heat. The accelerometer only runs
-/// while the lid is closed on battery and Insomnia holds the Mac awake, the one case where a bag is possible.
+/// while the lid is closed with no external display and Insomnia holds the Mac awake, the one case where a bag is possible.
 @MainActor
 final class BagSensors {
     private static let rootDomain = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
     private let store = SCDynamicStoreCreate(nil, "Insomnia" as CFString, nil, nil)
     private let motion = Motion()
+    private let path = NWPathMonitor()
+    /// A phone's hotspot, which macOS marks as an expensive path.
+    private var hotspot = false
+
+    init() {
+        path.pathUpdateHandler = { [weak self] path in
+            MainActor.assumeIsolated { self?.hotspot = path.isExpensive }
+        }
+        path.start(queue: .main)
+    }
 
     /// Closed with no external display, so not a Mac docked in clamshell mode.
     static var lidClosedUndocked: Bool { lidClosed && !externalDisplay }
 
     func read(watchMotion: Bool) -> BagDetector.Reading {
-        let onBattery = IOPSCopyPowerSourcesInfo().map {
-            IOPSGetProvidingPowerSourceType($0.takeRetainedValue()).takeUnretainedValue() as String == kIOPSBatteryPowerValue
-        } ?? false
-        let reading = BagDetector.Reading(lidClosed: Self.lidClosed, onBattery: onBattery, externalDisplay: Self.externalDisplay,
-                                          carriedAt: motion.carriedAt, router: router)
-        watchMotion && reading.lidClosed && onBattery && !reading.externalDisplay ? motion.start() : motion.stop()
+        let reading = BagDetector.Reading(lidClosed: Self.lidClosed, externalDisplay: Self.externalDisplay,
+                                          carriedSeconds: motion.carriedSeconds, onEdge: motion.onEdge, router: router,
+                                          hotspot: hotspot, thermal: ProcessInfo.processInfo.thermalState)
+        watchMotion && reading.lidClosed && !reading.externalDisplay ? motion.start() : motion.stop()
         return reading
     }
 
@@ -63,7 +71,8 @@ private final class Motion {
     private let report = UnsafeMutablePointer<UInt8>.allocate(capacity: 64)
     /// Set once a Mac turns out to have no accelerometer, so it is not looked for again on every poll.
     private var unsupported = false
-    private(set) var carriedAt: Date?
+    private(set) var carriedSeconds = 0
+    var onEdge: Bool { window.onEdge }
 
     func start() {
         guard manager == nil, !unsupported else { return }
@@ -101,7 +110,7 @@ private final class Motion {
                 }
                 let (x, y, z) = (axis(6), axis(10), axis(14))
                 MainActor.assumeIsolated {
-                    Unmanaged<Motion>.fromOpaque(context).takeUnretainedValue().window.add((x * x + y * y + z * z).squareRoot())
+                    Unmanaged<Motion>.fromOpaque(context).takeUnretainedValue().window.add(x: x, y: y, z: z)
                 }
             }, context)
         }
@@ -111,7 +120,7 @@ private final class Motion {
         let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
-                if self.window.tick() { self.carriedAt = .now }
+                if self.window.tick() { self.carriedSeconds += 1 }
             }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -127,6 +136,6 @@ private final class Motion {
         timer?.invalidate()
         timer = nil
         window = MotionWindow()
-        carriedAt = nil
+        carriedSeconds = 0
     }
 }

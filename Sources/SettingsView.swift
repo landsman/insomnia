@@ -47,7 +47,7 @@ struct SettingsView: View {
                 Toggle("Sleep When Carried in a Bag", isOn: $watchesForBag)
                     .onChange(of: watchesForBag) { _, on in insomnia.watchesForBag = on }
             } footer: {
-                Text("With the lid closed on battery, Insomnia notices your Mac being carried, leaving its network or warming up, and puts it to sleep before it overheats.")
+                Text("Close the lid and leave with your Mac, and it goes to sleep, safe in your bag. A walk to a meeting room keeps the work going.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

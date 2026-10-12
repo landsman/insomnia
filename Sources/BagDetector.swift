@@ -1,59 +1,67 @@
 import Foundation
 
-/// Tells a Mac carried off in a bag from one closed on a desk. Nothing says "bag" directly, so it adds up
-/// weighted signals, and only with the lid closed on battery with no external display: anything plugged in
-/// means a desk. Motion only shows that the Mac is being carried, and a bag set down looks like a desk to
-/// the accelerometer, so carrying is remembered until the lid opens again. Heat is not scored here: it has
-/// the last word in Power.pause, at a lower threshold the likelier a bag is.
+/// Tells leaving with the Mac in a bag from carrying it to a meeting room, both with the lid closed and no
+/// external display. No single sign decides, since each fails somewhere: a hotspot never loses its network,
+/// a long walk across a campus is still the office. So weighted signs add up, from BagWeights, and the Mac sleeps
+/// at its sleepAt.
+/// docs/bag-detection.md has the reasoning and the scenarios, which BagScenarioTests replays.
 struct BagDetector {
     struct Reading {
         var lidClosed: Bool
-        var onBattery: Bool
         var externalDisplay: Bool
-        /// When the Mac was last found being carried, see MotionWindow.
-        var carriedAt: Date?
+        /// Seconds the Mac has been carried since the motion sensor started, see MotionWindow.
+        var carriedSeconds: Int
+        /// Standing rather than lying, as in a backpack.
+        var onEdge: Bool
         /// The network's router, nil without a network.
         var router: String?
+        /// A phone's hotspot, which travels along and so never shows leaving.
+        var hotspot: Bool
+        var thermal: ProcessInfo.ThermalState
     }
 
-    enum Level: Comparable { case none, careful, sleep }
+    /// Roaming between access points drops the network for seconds, leaving the building for good.
+    static let networkChangedFor: TimeInterval = 60
 
-    static let carriedWeight = 50
-    static let networkWeight = 30
-    /// Carried is careful; carried off to another network, or off any network, is a bag.
-    static let carefulScore = 50
-    static let sleepScore = 80
-    /// Carrying only counts once it goes on this long after the lid closed, so a walk to a meeting room,
-    /// even one that switches the office network, never counts. A commute does.
-    static let grace: TimeInterval = 5 * 60
-
-    private var closedAt: Date?
-    /// The router when the lid closed. nil when there was no network then, which leaves the network out.
+    private var closed = false
     private var routerAtClose: String?
-    private var carriedAt: Date?
+    private var closedOnHotspot = false
+    private var changedSince: Date?
+    private var carried: TimeInterval = 0
+    private var lastCarriedSeconds = 0
 
+    let weights: BagWeights
     private(set) var score = 0
+    var isLeaving: Bool { score >= weights.sleepAt }
 
-    var level: Level {
-        score >= Self.sleepScore ? .sleep : score >= Self.carefulScore ? .careful : .none
+    init(weights: BagWeights = .standard) {
+        self.weights = weights
     }
 
     @discardableResult
-    mutating func update(_ reading: Reading, now: Date = .now) -> Level {
-        guard reading.lidClosed, reading.onBattery, !reading.externalDisplay else {
-            (closedAt, routerAtClose, carriedAt, score) = (nil, nil, nil, 0)
-            return level
+    mutating func update(_ reading: Reading, now: Date = .now) -> Bool {
+        guard reading.lidClosed, !reading.externalDisplay else {
+            self = BagDetector(weights: weights)
+            return false
         }
-        if closedAt == nil {
-            closedAt = now
+        if !closed {
+            closed = true
             routerAtClose = reading.router
+            closedOnHotspot = reading.hotspot
         }
-        if let at = reading.carriedAt, at >= closedAt! + Self.grace { carriedAt = max(at, carriedAt ?? at) }
+        // The sensor's count starts over whenever it does; carrying is remembered until the lid opens,
+        // since a bag set down reads like a desk to the accelerometer.
+        carried += TimeInterval(reading.carriedSeconds >= lastCarriedSeconds ? reading.carriedSeconds - lastCarriedSeconds : reading.carriedSeconds)
+        lastCarriedSeconds = reading.carriedSeconds
+        changedSince = reading.router == routerAtClose ? nil : changedSince ?? now
 
-        score = 0
-        if carriedAt != nil { score += Self.carriedWeight }
-        if let routerAtClose, reading.router != routerAtClose { score += Self.networkWeight }
-        return level
+        score = weights.carried.filter { carried >= $0.minutes * 60 }.map(\.points).max() ?? 0
+        if let changedSince, routerAtClose != nil, !closedOnHotspot, now.timeIntervalSince(changedSince) >= Self.networkChangedFor {
+            score += weights.leftNetwork
+        }
+        if reading.onEdge { score += weights.onEdge }
+        if reading.thermal.rawValue >= ProcessInfo.ThermalState.fair.rawValue { score += weights.warm }
+        return isLeaving
     }
 }
 
@@ -64,23 +72,29 @@ struct MotionWindow {
     static let movingDeviation = 0.02
     static let length = 30
     static let movingSeconds = 15
+    /// Gravity mostly off the Z axis: the Mac stands on an edge. ponytail: a guess until a bag and a hand are measured.
+    static let edgeRatio = 0.5
 
     private var seconds: [Bool] = []
     // Running sums rather than the samples: they arrive 100 times a second.
-    private var count = 0.0, sum = 0.0, squares = 0.0
+    private var count = 0.0, sum = 0.0, squares = 0.0, z = 0.0
+    private(set) var onEdge = false
 
-    /// Adds one acceleration magnitude, in g.
-    mutating func add(_ magnitude: Double) {
+    /// Adds one acceleration sample, in g.
+    mutating func add(x: Double, y: Double, z: Double) {
+        let magnitude = (x * x + y * y + z * z).squareRoot()
         count += 1
         sum += magnitude
         squares += magnitude * magnitude
+        self.z += abs(z)
     }
 
     /// Closes the current second and says whether the Mac is being carried.
     mutating func tick() -> Bool {
         let mean = sum / max(count, 1)
         let deviation = max(squares / max(count, 1) - mean * mean, 0).squareRoot()
-        (count, sum, squares) = (0, 0, 0)
+        if count > 0 { onEdge = z / count < Self.edgeRatio * mean }
+        (count, sum, squares, z) = (0, 0, 0, 0)
         seconds.append(deviation > Self.movingDeviation)
         if seconds.count > Self.length { seconds.removeFirst() }
         return seconds.filter { $0 }.count >= Self.movingSeconds

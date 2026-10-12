@@ -48,8 +48,8 @@ final class Insomnia {
     private let appMonitor = AppMonitor()
     private let bagSensors = BagSensors()
     private var bagDetector = BagDetector()
-    /// Whether the last look found the Mac on battery, the only time it can be carried off.
-    private var onBattery = false
+    /// Whether the last look found the lid closed with no external display, the only time the Mac can be carried off.
+    private var watchingBag = false
     private var latched: Power.Pause?
     private let defaults: UserDefaults
     private var timer: Timer?
@@ -127,22 +127,22 @@ final class Insomnia {
         #endif
         if isWorking { lastWork = now }
         if isOn {
-            var level = BagDetector.Level.none
+            var leaving = false
             if watchesForBag {
                 let reading = bagSensors.read(watchMotion: awakeSince != nil)
-                onBattery = reading.onBattery
+                watchingBag = reading.lidClosed && !reading.externalDisplay
                 let score = bagDetector.score
-                level = bagDetector.update(reading, now: now)
+                leaving = bagDetector.update(reading, now: now)
                 if bagDetector.score != score {
                     // log stream --predicate 'subsystem == "com.michalptacek.insomnia"' --level info
-                    Self.log.info("Bag score \(self.bagDetector.score) (\(String(describing: level))): lid closed \(reading.lidClosed), battery \(reading.onBattery), external display \(reading.externalDisplay), carried \(reading.carriedAt?.description ?? "no"), router \(reading.router ?? "none")")
+                    Self.log.info("Bag score \(self.bagDetector.score): lid closed \(reading.lidClosed), external display \(reading.externalDisplay), carried \(reading.carriedSeconds) s, on edge \(reading.onEdge), router \(reading.router ?? "none"), hotspot \(reading.hotspot), thermal \(reading.thermal.rawValue)")
                 }
             } else {
                 forgetBag()
                 if latched == .bag { latched = nil }
             }
             let lidClosed = BagSensors.lidClosedUndocked
-            let current = Power.pause(bag: level, lidClosedUndocked: lidClosed)
+            let current = Power.pause(leaving: leaving, lidClosedUndocked: lidClosed)
             // Paused for heat or a bag with the lid closed, it stays paused until the lid opens or a display is
             // plugged in, so a wake after it cooled down never holds it awake in the bag again.
             if !lidClosed { latched = nil } else if latched == nil, current == .heat || current == .bag { latched = current }
@@ -181,11 +181,11 @@ final class Insomnia {
 
     /// Polls for work only while Insomnia relies on it: every 10 s to catch it starting, every 30 s
     /// while it runs, since the grace period makes noticing the end later harmless. Livelier while the menu shows it.
-    /// Awake on battery it also looks every 30 s for the lid closing, in case the Mac is carried off.
+    /// With the lid closed it also looks every 30 s for the Mac being carried off.
     private func schedule() {
         let interval: TimeInterval? = isWatching ? 3
             : isOn && mode == .working ? (awakeSince == nil ? 10 : 30)
-            : awakeSince != nil && onBattery ? 30 : nil
+            : awakeSince != nil && watchingBag ? 30 : nil
         guard timer?.timeInterval != interval else { return }
         timer?.invalidate()
         timer = nil
@@ -202,7 +202,7 @@ final class Insomnia {
     private func forgetBag() {
         bagSensors.stop()
         bagDetector = BagDetector()
-        onBattery = false
+        watchingBag = false
     }
 
     func shutDown() {
