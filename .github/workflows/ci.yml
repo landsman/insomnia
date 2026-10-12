@@ -1,4 +1,4 @@
-name: Build
+name: CI
 
 on:
   push:
@@ -8,12 +8,15 @@ on:
       - Resources/**
       - Support/**
       - scripts/**
-      - .github/workflows/build.yml
+      - .github/workflows/ci.yml
   pull_request:
     paths: *app
+  workflow_dispatch:
 
 jobs:
   build:
+    # Dispatch needs write access anyway; this narrows it to the owner, not collaborators.
+    if: github.event_name != 'workflow_dispatch' || github.actor == github.repository_owner
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v7
