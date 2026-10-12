@@ -8,6 +8,8 @@ on:
       - Resources/**
       - Support/**
       - scripts/**
+      - Tests/**
+      - Package.swift
       - .github/workflows/ci.yml
   pull_request:
     paths: *app
@@ -20,6 +22,7 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v7
+      - run: make test
       - run: scripts/build.sh release
       - run: scripts/verify.sh
       # ditto keeps the executable bit and the signature, which the artifact zip drops;

@@ -1,5 +1,6 @@
 import AppKit
 import IOKit.ps
+import os
 
 @MainActor
 final class Insomnia {
@@ -18,6 +19,10 @@ final class Insomnia {
     /// Apps, by bundle identifier, that count as work whenever they are open, busy or not.
     var chosenApps: [String] {
         didSet { defaults.set(chosenApps, forKey: "chosenApps"); refresh() }
+    }
+    /// Off by default: it reads a motion sensor Apple does not document, and it can put the Mac to sleep mid-work.
+    var watchesForBag: Bool {
+        didSet { defaults.set(watchesForBag, forKey: "watchesForBag"); refresh() }
     }
     /// The menu watches work while it is open, even when Insomnia is off.
     var isWatching = false {
@@ -38,8 +43,18 @@ final class Insomnia {
     private(set) var lastWork: Date?
 
     let power: Power
+    private static let log = Logger(subsystem: "com.michalptacek.insomnia", category: "bag")
     private let agentMonitor = AgentMonitor()
     private let appMonitor = AppMonitor()
+    private let bagSensors = BagSensors()
+    private var bagDetector = BagDetector()
+    /// Whether the last look found the lid closed with no external display, the only time the Mac can be carried off.
+    private var watchingBag = false
+    private var latched: Power.Pause?
+    private var latchedAt: Date?
+    private var lastScan: Date?
+    /// Why and when the Mac last slept for a bag or heat, shown in the menu until `until`.
+    private(set) var lastSleep: (pause: Power.Pause, at: Date, until: Date)?
     private let defaults: UserDefaults
     private var timer: Timer?
 
@@ -49,6 +64,8 @@ final class Insomnia {
         isOn = defaults.bool(forKey: "on")
         mode = Mode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .working
         chosenApps = defaults.stringArray(forKey: "chosenApps") ?? []
+        // A setting carried over to a Mac without the motion sensor stays off, heat pause included.
+        watchesForBag = BagSensors.hasMotionSensor && defaults.bool(forKey: "watchesForBag")
         refresh()
         rescanSoon()
 
@@ -60,6 +77,24 @@ final class Insomnia {
         _ = NotificationCenter.default.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil,
                                                    queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { self?.refresh() }
+        }
+        // The lid closing and opening arrive as kIOPMMessageClamshellStateChange from the power manager. Nothing
+        // else it says matters here, and refreshing on all of it would rescan for work on every assertion change.
+        let port = IONotificationPortCreate(kIOMainPortDefault)
+        IONotificationPortSetDispatchQueue(port, .main)
+        var lidNotification: io_object_t = 0
+        IOServiceAddInterestNotification(port, IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain")),
+                                         "IOGeneralInterest", { context, _, message, _ in
+            guard message == 0xE003_4100 else { return }
+            MainActor.assumeIsolated { Unmanaged<Insomnia>.fromOpaque(context!).takeUnretainedValue().refresh() }
+        }, Unmanaged.passUnretained(self).toOpaque(), &lidNotification)
+        // After a wake the accelerometer is set up afresh by the next look, in case its driver forgot.
+        _ = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil,
+                                                              queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.bagSensors.stop()
+                self?.refresh()
+            }
         }
         // A chosen app counts from the moment it opens, not from the next poll.
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
@@ -84,7 +119,9 @@ final class Insomnia {
 
     func refresh() {
         let now = Date.now
-        if mode == .working && (isOn || isWatching) {
+        // A lid or wake message can land right after another look; too soon to measure work again.
+        if mode == .working && (isOn || isWatching) && lastScan.map({ now.timeIntervalSince($0) >= 0.5 }) ?? true {
+            lastScan = now
             let processes = Processes.current()
             agents = agentMonitor.scan(processes, now: now)
             apps = appMonitor.scan(processes, ignoring: agentMonitor.involved, now: now)
@@ -94,14 +131,44 @@ final class Insomnia {
             }
             let rate = appMonitor.uploadRate(now: now)
             upload = rate >= AppMonitor.uploadBytesPerSecond ? rate : 0
-        } else {
+        } else if !(mode == .working && (isOn || isWatching)) {
             (agents, apps, upload) = ([], [], 0)
         }
         #if DEBUG
         if let demo { (agents, apps, upload) = demo }
         #endif
         if isWorking { lastWork = now }
-        pause = isOn ? Power.pause : nil
+        if isOn {
+            var leaving = false
+            let lidClosed: Bool
+            if watchesForBag {
+                let reading = bagSensors.read(watchMotion: awakeSince != nil)
+                lidClosed = reading.lidClosed && !reading.externalDisplay
+                // Docked with the lid closed too, so unplugging the display and walking off is noticed.
+                watchingBag = reading.lidClosed
+                let score = bagDetector.score
+                leaving = bagDetector.update(reading, now: now)
+                if bagDetector.score != score {
+                    // log stream --predicate 'subsystem == "com.michalptacek.insomnia"' --level info
+                    Self.log.info("Bag score \(self.bagDetector.score): lid closed \(reading.lidClosed), external display \(reading.externalDisplay), carried \(reading.carriedSeconds) s, on edge \(reading.onEdge), router \(reading.router ?? "none"), hotspot \(reading.hotspot), thermal \(reading.thermal.rawValue)")
+                }
+            } else {
+                forgetBag()
+                lidClosed = BagSensors.lidClosedUndocked
+            }
+            let current = Power.pause(leaving: leaving, lidClosedUndocked: watchesForBag && lidClosed)
+            let wasLatched = latched
+            latched = Power.latch(current, latched: latched, lidClosedUndocked: lidClosed, watchesForBag: watchesForBag)
+            if wasLatched == nil, latched != nil { latchedAt = now }
+            // Opened again after sleeping for a bag or heat: the menu says so for a while, or nobody would know why.
+            if let wasLatched, latched == nil, !lidClosed, let latchedAt { lastSleep = (wasLatched, latchedAt, now + 15 * 60) }
+            if lidClosed { lastSleep = nil }
+            pause = latched ?? current
+        } else {
+            forgetBag()
+            latched = nil
+            pause = nil
+        }
 
         let recentWork = lastWork.map { now.timeIntervalSince($0) < Self.grace } ?? false
         let awake = isOn && pause == nil && (mode == .always || recentWork)
@@ -110,6 +177,7 @@ final class Insomnia {
             power.hold()
         } else if !awake, awakeSince != nil {
             awakeSince = nil
+            bagSensors.stop()
             power.release()
         } else if awake {
             power.reassert()
@@ -131,8 +199,11 @@ final class Insomnia {
 
     /// Polls for work only while Insomnia relies on it: every 10 s to catch it starting, every 30 s
     /// while it runs, since the grace period makes noticing the end later harmless. Livelier while the menu shows it.
+    /// With the lid closed it also looks every 30 s for the Mac being carried off.
     private func schedule() {
-        let interval: TimeInterval? = isWatching ? 3 : isOn && mode == .working ? (awakeSince == nil ? 10 : 30) : nil
+        let interval: TimeInterval? = isWatching ? 3
+            : isOn && mode == .working ? (awakeSince == nil ? 10 : 30)
+            : awakeSince != nil && watchingBag ? 30 : nil
         guard timer?.timeInterval != interval else { return }
         timer?.invalidate()
         timer = nil
@@ -146,8 +217,15 @@ final class Insomnia {
         self.timer = timer
     }
 
+    private func forgetBag() {
+        bagSensors.stop(network: true)
+        bagDetector = BagDetector()
+        watchingBag = false
+    }
+
     func shutDown() {
         timer?.invalidate()
+        bagSensors.stop()
         power.release()
     }
 }

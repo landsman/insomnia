@@ -7,7 +7,7 @@ import IOKit.pwr_mgt
 /// A sudoers rule, installed once with an administrator password, lets it do that and nothing else.
 @MainActor
 final class Power {
-    enum Pause { case battery, heat }
+    enum Pause { case battery, heat, bag }
 
     private static let rule = "/etc/sudoers.d/insomnia"
     private static let lowBattery = 10
@@ -72,18 +72,39 @@ final class Power {
         holdLid()
     }
 
-    static var pause: Pause? {
-        if ProcessInfo.processInfo.thermalState == .critical { return .heat }
+    static func pause(leaving: Bool, lidClosedUndocked: Bool) -> Pause? {
+        pause(thermal: ProcessInfo.processInfo.thermalState, batteryLow: batteryLow, leaving: leaving,
+              lidClosedUndocked: lidClosedUndocked)
+    }
+
+    /// Leaving with the Mac lets it sleep. Heat has the last word either way: critical anywhere, and with the bag
+    /// safeguard on, serious with the lid closed away from a dock, for the bags the detector misses. With it off,
+    /// Insomnia behaves as it always has.
+    nonisolated static func pause(thermal: ProcessInfo.ThermalState, batteryLow: Bool, leaving: Bool,
+                                  lidClosedUndocked: Bool) -> Pause? {
+        if leaving { return .bag }
+        if thermal.rawValue >= (lidClosedUndocked ? ProcessInfo.ThermalState.serious : .critical).rawValue { return .heat }
+        return batteryLow ? .battery : nil
+    }
+
+    /// With the bag safeguard on, a pause for heat or a bag with the lid closed holds until the lid opens or a display
+    /// is plugged in, so a wake after cooling down never holds the Mac awake in the bag again.
+    nonisolated static func latch(_ current: Pause?, latched: Pause?, lidClosedUndocked: Bool, watchesForBag: Bool) -> Pause? {
+        guard watchesForBag, lidClosedUndocked else { return nil }
+        return latched ?? (current == .heat || current == .bag ? current : nil)
+    }
+
+    private static var batteryLow: Bool {
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
-              let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return nil }
+              let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return false }
         for source in sources {
             guard let description = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue() as? [String: Any],
                   description[kIOPSPowerSourceStateKey] as? String == kIOPSBatteryPowerValue,
                   let level = description[kIOPSCurrentCapacityKey] as? Int,
                   let capacity = description[kIOPSMaxCapacityKey] as? Int, capacity > 0 else { continue }
-            if level * 100 / capacity <= lowBattery { return .battery }
+            if level * 100 / capacity <= lowBattery { return true }
         }
-        return nil
+        return false
     }
 
     private func holdLid() {

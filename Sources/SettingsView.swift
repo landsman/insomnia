@@ -2,15 +2,17 @@ import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Opening at login, and the apps that keep the Mac awake whenever they are open.
+/// Opening at login, the apps that keep the Mac awake whenever they are open, and the bag safeguard.
 struct SettingsView: View {
     let insomnia: Insomnia
     @State private var apps: [String]
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var watchesForBag: Bool
 
     init(insomnia: Insomnia) {
         self.insomnia = insomnia
         _apps = State(initialValue: insomnia.chosenApps)
+        _watchesForBag = State(initialValue: insomnia.watchesForBag)
     }
 
     var body: some View {
@@ -41,10 +43,27 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // Offered only on a MacBook with the motion sensor, without which a bag cannot be told;
+            // anyone else learns why it is not there.
+            Section {
+                if BagSensors.hasMotionSensor {
+                    Toggle("Sleep When Carried in a Bag", isOn: $watchesForBag)
+                        .onChange(of: watchesForBag) { _, on in insomnia.watchesForBag = on }
+                } else {
+                    Text("“Sleep When Carried in a Bag” needs the motion sensor of a MacBook with M1 Pro, M1 Max, or M2 and later.")
+                        .foregroundStyle(.secondary)
+                }
+            } footer: {
+                if BagSensors.hasMotionSensor {
+                    Text("Close the lid and leave with your Mac, and it goes to sleep, safe in your bag. A walk to a meeting room keeps the work going.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
         .formStyle(.grouped)
         // Grows with the list, which scrolls once it is long.
-        .frame(width: 440, height: CGFloat(212 + 41 * min(apps.count, 8)))
+        .frame(width: 440, height: CGFloat((BagSensors.hasMotionSensor ? 322 : 296) + 41 * min(apps.count, 8)))
     }
 
     private func add() {
