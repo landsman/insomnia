@@ -50,7 +50,7 @@ struct SettingsView: View {
                     Toggle("Sleep When Carried in a Bag", isOn: $watchesForBag)
                         .onChange(of: watchesForBag) { _, on in insomnia.watchesForBag = on }
                 } else {
-                    Text("Sleeping when carried in a bag needs the motion sensor of a MacBook with M1 Pro, M1 Max, or M2 and later.")
+                    Text("“Sleep When Carried in a Bag” needs the motion sensor of a MacBook with M1 Pro, M1 Max, or M2 and later.")
                         .foregroundStyle(.secondary)
                 }
             } footer: {
