@@ -87,6 +87,10 @@ Quit Insomnia and move it to the Trash. To remove the closed-lid permission as w
 sudo rm /etc/sudoers.d/insomnia
 ```
 
+## License
+
+Insomnia is released under the [MIT License](LICENSE).
+
 ---
 
 <p align="center">Made by <a href="https://www.linkedin.com/in/michalptacek/">Michal Ptacek</a></p>
