@@ -62,13 +62,13 @@ Nothing else gets elevated.
 Safeguards:
 
 - If Insomnia quits or crashes, a watchdog restores normal sleep within milliseconds.
-- Below 10 % battery, or when the Mac runs too hot, Insomnia pauses, and with the lid closed it stays paused until you open it.
+- Below 10 % battery, or when the Mac runs too hot, Insomnia pauses.
 - When the work is done and the lid is closed, Insomnia puts the Mac to sleep rather than leaving it running in your bag.
-- Optional, off by default: **Sleep When Carried in a Bag** in Settings lets the Mac sleep when you close the lid and leave with it, while a walk to a meeting room keeps the work going. [How it decides](docs/bag-detection.md).
+- Optional, off by default: **Sleep When Carried in a Bag** in Settings lets the Mac sleep when you close the lid and leave with it, while a walk to a meeting room keeps the work going. With it on, a closed Mac also pauses sooner when it runs hot, until you open the lid. It needs an Apple silicon MacBook. [How it decides](docs/bag-detection.md).
 
 ## Light on resources
 
-Turned off, Insomnia does nothing at all. In Until Turned Off it only listens for system events, plus, with the bag safeguard on, a look every 30 seconds while awake on battery, to notice the lid closing. The motion sensor runs only then, with the lid closed on battery. While Working takes a look of a millisecond or two every 10 seconds, or every 30 seconds while something works, which stays under 0.1 % of one CPU core and about 15 MB of memory.
+Turned off, Insomnia does nothing at all. In Until Turned Off it only listens for system events, plus, with the bag safeguard on, a look every 30 seconds while the lid is closed. The motion sensor runs only while the lid is closed and Insomnia holds the Mac awake. While Working takes a look of a millisecond or two every 10 seconds, or every 30 seconds while something works, which stays under 0.1 % of one CPU core and about 15 MB of memory.
 
 ## Build from source
 
@@ -83,7 +83,7 @@ This builds a universal app and installs it to `/Applications`. No Xcode project
 Run the tests with:
 
 ```bash
-swift test
+make test
 ```
 
 ## Uninstall
