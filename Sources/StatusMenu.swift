@@ -121,6 +121,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
+        menu.addItem(item("About Insomnia", #selector(about)))
         menu.addItem(item("Settings…", #selector(openSettings), key: ","))
         menu.addItem(item("Quit Insomnia", #selector(quit), key: "q"))
     }
@@ -204,6 +205,22 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         insomnia.power.allowClosedLid()
         canKeepLidClosed = insomnia.power.canKeepLidClosed
         updateMenu()
+    }
+
+    static var credits: NSAttributedString {
+        let style = NSMutableParagraphStyle()
+        style.alignment = .center
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: NSFont.smallSystemFontSize),
+                                                         .foregroundColor: NSColor.secondaryLabelColor, .paragraphStyle: style]
+        let credits = NSMutableAttributedString(string: "Made by Michal Ptacek, founder of CzechCrunch\n", attributes: attributes)
+        credits.append(NSAttributedString(string: "michal@cc.cz",
+                                          attributes: attributes.merging([.link: URL(string: "mailto:michal@cc.cz")!]) { $1 }))
+        return credits
+    }
+
+    @objc private func about() {
+        NSApp.activate()
+        NSApp.orderFrontStandardAboutPanel(options: [.credits: Self.credits])
     }
 
     @objc func openSettings() {

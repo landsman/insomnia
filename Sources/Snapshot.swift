@@ -2,7 +2,8 @@
 import AppKit
 
 /// INSOMNIA_SNAPSHOT=/tmp/shot opens the menu, saves /tmp/shot-menu.png and /tmp/shot-icon.png, and quits.
-/// With INSOMNIA_SETTINGS=1 it shows the settings window instead, with INSOMNIA_CHOSEN="bundle.id,…" in it.
+/// With INSOMNIA_SETTINGS=1 it shows the settings window instead, with INSOMNIA_CHOSEN="bundle.id,…" in it,
+/// and with INSOMNIA_ABOUT=1 the About panel.
 /// INSOMNIA_ON=1, INSOMNIA_MODE=always, INSOMNIA_DARK=1 and INSOMNIA_HIGHLIGHT=<row title> set up what to capture.
 /// INSOMNIA_AGENTS="project:Agent,…", INSOMNIA_APPS="/Applications/App.app,…" and INSOMNIA_UPLOAD=<bytes per second>
 /// show that work instead of whatever runs on this Mac.
@@ -43,9 +44,11 @@ struct Snapshot {
                     MainActor.assumeIsolated { NSApp.terminate(nil) }
                 }
             }
+            // Windows come to the front without taking focus from whatever is in use.
             if ProcessInfo.processInfo.environment["INSOMNIA_SETTINGS"] == "1" {
-                // In front without taking focus from whatever is in use.
                 statusMenu.settings.orderFrontRegardless()
+            } else if ProcessInfo.processInfo.environment["INSOMNIA_ABOUT"] == "1" {
+                NSApp.orderFrontStandardAboutPanel(options: [.credits: StatusMenu.credits])
             } else {
                 statusMenu.statusItem.button?.performClick(nil)
             }
