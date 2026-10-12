@@ -4,7 +4,8 @@
 
 <h1 align="center">Insomnia</h1>
 
-<p align="center">Keeps your Mac awake while it works, even with the lid closed.</p>
+<p align="center">Keeps your Mac awake while it works, even with the lid closed.<br>
+<b>Made for everyone in the creator economy.</b></p>
 
 <p align="center">
   <picture>
@@ -15,7 +16,7 @@
 
 Insomnia lives in the menu bar. Start an export, a render, an upload or a coding agent, then close the lid or lock the screen and walk away. The work carries on, and the Mac goes to sleep once it is done.
 
-It is made for video editors waiting on an export, 3D artists rendering overnight, creators uploading a finished video and developers whose AI agents keep coding while they are away.
+It works for video editors waiting on an export, 3D artists rendering overnight, creators uploading a finished video and developers whose AI agents keep coding while they are away.
 
 ## Download
 
