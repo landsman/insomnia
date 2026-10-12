@@ -99,7 +99,7 @@ These times check the weights, not the app. In the app the sensor needs about 15
 
 **Heat has the last word regardless of the score.** Insomnia pauses at `.critical` anywhere. With this setting on, it also pauses at `.serious` with the lid closed and no external display, for the bags the score misses, and a pause for heat or a bag with the lid closed lasts until the lid opens, so a wake after cooling down never holds the Mac awake in the bag again. With the setting off, Insomnia behaves as it always has. After such a sleep the menu says why for 15 minutes ("Slept at 17:42 when you left with it").
 
-**Where it cannot help.** A Mac without the accelerometer never scores, since every sign needs a trip first; Settings says so and disables the toggle. A flat bag carried on a hotspot reaches only 60 without warming up, and a car ride that does not shake the Mac adds no carrying; heat is the backstop for both.
+**Where it cannot help.** A Mac without the accelerometer could never score, since every sign needs a trip first, so the setting is not offered there at all: Settings shows a line saying which MacBooks have the sensor in place of the toggle, and a value carried over from another Mac stays off, heat pause included. On a Mac with the sensor that line never appears. The gate is the accelerometer's driver in the IORegistry, not a list of models, so a future MacBook with the sensor works and one without it drops out by itself. A flat bag carried on a hotspot reaches only 60 without warming up, and a car ride that does not shake the Mac adds no carrying; heat is the backstop for both.
 
 ## Open questions
 

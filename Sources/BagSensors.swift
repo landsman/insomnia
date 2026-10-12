@@ -20,7 +20,13 @@ final class BagSensors {
 
     /// Only MacBooks with M1 Pro, M1 Max, or M2 and later have the accelerometer. Intel Macs, the M1 MacBook Air
     /// and Pro, and the MacBook Neo do not, and then a bag cannot be told.
-    static let hasMotionSensor = Motion.driver.map { IOObjectRelease($0); return true } ?? false
+    static let hasMotionSensor: Bool = {
+        #if DEBUG
+        // INSOMNIA_NO_MOTION=1 shows the Settings of a Mac without it, for snapshots.
+        if ProcessInfo.processInfo.environment["INSOMNIA_NO_MOTION"] == "1" { return false }
+        #endif
+        return Motion.driver.map { IOObjectRelease($0); return true } ?? false
+    }()
 
     /// Closed with no external display, so not a Mac docked in clamshell mode.
     static var lidClosedUndocked: Bool { lidClosed && !externalDisplay }

@@ -43,21 +43,27 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            // Offered only on a MacBook with the motion sensor, without which a bag cannot be told;
+            // anyone else learns why it is not there.
             Section {
-                Toggle("Sleep When Carried in a Bag", isOn: $watchesForBag)
-                    .onChange(of: watchesForBag) { _, on in insomnia.watchesForBag = on }
-                    .disabled(!BagSensors.hasMotionSensor)
+                if BagSensors.hasMotionSensor {
+                    Toggle("Sleep When Carried in a Bag", isOn: $watchesForBag)
+                        .onChange(of: watchesForBag) { _, on in insomnia.watchesForBag = on }
+                } else {
+                    Text("Sleeping when carried in a bag needs the motion sensor of a MacBook with M1 Pro, M1 Max, or M2 and later.")
+                        .foregroundStyle(.secondary)
+                }
             } footer: {
-                Text(BagSensors.hasMotionSensor
-                     ? "Close the lid and leave with your Mac, and it goes to sleep, safe in your bag. A walk to a meeting room keeps the work going."
-                     : "Needs the motion sensor of a MacBook with M1 Pro, M1 Max, or M2 and later, which this Mac does not have.")
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if BagSensors.hasMotionSensor {
+                    Text("Close the lid and leave with your Mac, and it goes to sleep, safe in your bag. A walk to a meeting room keeps the work going.")
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
         .formStyle(.grouped)
         // Grows with the list, which scrolls once it is long.
-        .frame(width: 440, height: CGFloat(322 + 41 * min(apps.count, 8)))
+        .frame(width: 440, height: CGFloat((BagSensors.hasMotionSensor ? 322 : 296) + 41 * min(apps.count, 8)))
     }
 
     private func add() {

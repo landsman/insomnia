@@ -64,7 +64,8 @@ final class Insomnia {
         isOn = defaults.bool(forKey: "on")
         mode = Mode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .working
         chosenApps = defaults.stringArray(forKey: "chosenApps") ?? []
-        watchesForBag = defaults.bool(forKey: "watchesForBag")
+        // A setting carried over to a Mac without the motion sensor stays off, heat pause included.
+        watchesForBag = BagSensors.hasMotionSensor && defaults.bool(forKey: "watchesForBag")
         refresh()
         rescanSoon()
 
