@@ -64,10 +64,11 @@ Safeguards:
 - If Insomnia quits or crashes, a watchdog restores normal sleep within milliseconds.
 - Below 10 % battery, or when the Mac runs too hot, Insomnia pauses.
 - When the work is done and the lid is closed, Insomnia puts the Mac to sleep rather than leaving it running in your bag.
+- When the Mac seems to be in a bag, Insomnia gets careful and puts it to sleep sooner. With the lid closed on battery and no display plugged in, it adds up the signs: the Mac was carried (from its motion sensor, on Apple silicon), it left the network it was closed on, and it runs warm. Carried alone, it pauses at serious heat rather than critical; carried off to another network, it sleeps.
 
 ## Light on resources
 
-Turned off, Insomnia does nothing at all. In Until Turned Off it only listens for system events. While Working takes a look of a millisecond or two every 10 seconds, or every 30 seconds while something works, which stays under 0.1 % of one CPU core and about 15 MB of memory.
+Turned off, Insomnia does nothing at all. In Until Turned Off it only listens for system events, plus a look every 30 seconds while awake on battery, to notice the lid closing. The motion sensor runs only while the lid is closed on battery. While Working takes a look of a millisecond or two every 10 seconds, or every 30 seconds while something works, which stays under 0.1 % of one CPU core and about 15 MB of memory.
 
 ## Build from source
 
@@ -78,6 +79,12 @@ scripts/build.sh release --install
 ```
 
 This builds a universal app and installs it to `/Applications`. No Xcode project is needed.
+
+Run the tests with:
+
+```bash
+swift test
+```
 
 ## Uninstall
 

@@ -7,7 +7,7 @@ import IOKit.pwr_mgt
 /// A sudoers rule, installed once with an administrator password, lets it do that and nothing else.
 @MainActor
 final class Power {
-    enum Pause { case battery, heat }
+    enum Pause { case battery, heat, bag }
 
     private static let rule = "/etc/sudoers.d/insomnia"
     private static let lowBattery = 10
@@ -72,18 +72,28 @@ final class Power {
         holdLid()
     }
 
-    static var pause: Pause? {
-        if ProcessInfo.processInfo.thermalState == .critical { return .heat }
+    static func pause(bag: BagDetector.Level) -> Pause? {
+        pause(thermal: ProcessInfo.processInfo.thermalState, batteryLow: batteryLow, bag: bag)
+    }
+
+    /// A Mac that may be in a bag pauses a step earlier on heat, since a bag keeps it from cooling down.
+    nonisolated static func pause(thermal: ProcessInfo.ThermalState, batteryLow: Bool, bag: BagDetector.Level) -> Pause? {
+        if bag == .sleep { return .bag }
+        if thermal == .critical || bag == .careful && thermal == .serious { return .heat }
+        return batteryLow ? .battery : nil
+    }
+
+    private static var batteryLow: Bool {
         guard let info = IOPSCopyPowerSourcesInfo()?.takeRetainedValue(),
-              let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return nil }
+              let sources = IOPSCopyPowerSourcesList(info)?.takeRetainedValue() as? [CFTypeRef] else { return false }
         for source in sources {
             guard let description = IOPSGetPowerSourceDescription(info, source)?.takeUnretainedValue() as? [String: Any],
                   description[kIOPSPowerSourceStateKey] as? String == kIOPSBatteryPowerValue,
                   let level = description[kIOPSCurrentCapacityKey] as? Int,
                   let capacity = description[kIOPSMaxCapacityKey] as? Int, capacity > 0 else { continue }
-            if level * 100 / capacity <= lowBattery { return .battery }
+            if level * 100 / capacity <= lowBattery { return true }
         }
-        return nil
+        return false
     }
 
     private func holdLid() {

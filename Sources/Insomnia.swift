@@ -1,5 +1,6 @@
 import AppKit
 import IOKit.ps
+import os
 
 @MainActor
 final class Insomnia {
@@ -38,8 +39,13 @@ final class Insomnia {
     private(set) var lastWork: Date?
 
     let power: Power
+    private static let log = Logger(subsystem: "com.michalptacek.insomnia", category: "bag")
     private let agentMonitor = AgentMonitor()
     private let appMonitor = AppMonitor()
+    private let bagSensors = BagSensors()
+    private var bagDetector = BagDetector()
+    /// Whether the last look found the Mac on battery, the only time it can be carried off.
+    private var onBattery = false
     private let defaults: UserDefaults
     private var timer: Timer?
 
@@ -101,7 +107,19 @@ final class Insomnia {
         if let demo { (agents, apps, upload) = demo }
         #endif
         if isWorking { lastWork = now }
-        pause = isOn ? Power.pause : nil
+        if isOn {
+            let reading = bagSensors.read()
+            onBattery = reading.onBattery
+            let score = bagDetector.score
+            pause = Power.pause(bag: bagDetector.update(reading, now: now))
+            if bagDetector.score != score {
+                // log stream --predicate 'subsystem == "com.michalptacek.insomnia"' --level info
+                Self.log.info("Bag score \(self.bagDetector.score) (\(String(describing: self.bagDetector.level))): lid closed \(reading.lidClosed), battery \(reading.onBattery), external display \(reading.externalDisplay), carried \(reading.carriedAt?.description ?? "never"), router \(reading.router ?? "none"), thermal \(reading.thermal.rawValue)")
+            }
+        } else {
+            bagSensors.stop()
+            pause = nil
+        }
 
         let recentWork = lastWork.map { now.timeIntervalSince($0) < Self.grace } ?? false
         let awake = isOn && pause == nil && (mode == .always || recentWork)
@@ -131,8 +149,11 @@ final class Insomnia {
 
     /// Polls for work only while Insomnia relies on it: every 10 s to catch it starting, every 30 s
     /// while it runs, since the grace period makes noticing the end later harmless. Livelier while the menu shows it.
+    /// Awake on battery it also looks every 30 s for the lid closing, in case the Mac is carried off.
     private func schedule() {
-        let interval: TimeInterval? = isWatching ? 3 : isOn && mode == .working ? (awakeSince == nil ? 10 : 30) : nil
+        let interval: TimeInterval? = isWatching ? 3
+            : isOn && mode == .working ? (awakeSince == nil ? 10 : 30)
+            : awakeSince != nil && onBattery ? 30 : nil
         guard timer?.timeInterval != interval else { return }
         timer?.invalidate()
         timer = nil
@@ -148,6 +169,7 @@ final class Insomnia {
 
     func shutDown() {
         timer?.invalidate()
+        bagSensors.stop()
         power.release()
     }
 }

@@ -131,6 +131,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         switch insomnia.pause {
         case .battery: return "Paused while the battery is low"
         case .heat: return "Paused while your Mac cools down"
+        case .bag: return "Paused while your Mac seems to be in a bag"
         case nil: break
         }
         guard let since = insomnia.awakeSince else { return "Waiting for work" }
