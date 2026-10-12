@@ -50,7 +50,7 @@ struct SettingsView: View {
             } footer: {
                 Text(BagSensors.hasMotionSensor
                      ? "Close the lid and leave with your Mac, and it goes to sleep, safe in your bag. A walk to a meeting room keeps the work going."
-                     : "Needs the motion sensor of an Apple silicon MacBook, which this Mac does not have.")
+                     : "Needs the motion sensor of a MacBook with M1 Pro, M1 Max, or M2 and later, which this Mac does not have.")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }

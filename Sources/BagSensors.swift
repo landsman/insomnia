@@ -18,7 +18,8 @@ final class BagSensors {
     /// A phone's hotspot, which macOS marks as an expensive path.
     private var hotspot = false
 
-    /// Intel Macs and the 2020 M1 MacBook Pro have no accelerometer, and then a bag cannot be told.
+    /// Only MacBooks with M1 Pro, M1 Max, or M2 and later have the accelerometer. Intel Macs, the M1 MacBook Air
+    /// and Pro, and the MacBook Neo do not, and then a bag cannot be told.
     static let hasMotionSensor = Motion.driver.map { IOObjectRelease($0); return true } ?? false
 
     /// Closed with no external display, so not a Mac docked in clamshell mode.

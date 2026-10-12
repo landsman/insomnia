@@ -17,7 +17,7 @@ A bag is a problem because of heat. A closed Mac in a bag cannot cool, and the b
 |---|---|---|
 | Lid closed | `AppleClamshellState` on `IOPMrootDomain`, with changes delivered by an interest notification | no permission needed |
 | External display | `CGGetOnlineDisplayList` and `CGDisplayIsBuiltin` | the built-in display stays in the list with the lid closed, and a sleeping monitor drops out of the *active* list |
-| Motion | the accelerometer behind the Sensor Processing Unit on Apple silicon MacBooks: undocumented HID device, page `0xFF00`, usage 3 | readable without root on macOS 27 once its driver is told to report; Intel Macs and the 2020 M1 MacBook Pro do not have it |
+| Motion | the accelerometer behind the Sensor Processing Unit on Apple silicon MacBooks: undocumented HID device, page `0xFF00`, usage 3 | readable without root on macOS 27 once its driver is told to report; MacBooks with M1 Pro, M1 Max, or M2 and later have it; Intel Macs, the M1 MacBook Air and Pro, and the MacBook Neo (A18 Pro) do not |
 | Network | router from `SCDynamicStore` `State:/Network/Global/IPv4`; `NWPath.isExpensive` for a phone hotspot | many networks share `192.168.0.1` or `192.168.1.1`; IPv6-only networks have no IPv4 router |
 | Heat | `ProcessInfo.thermalState` | public, but coarse and late |
 | Location | Find My is encrypted and has no API; CoreLocation needs a permission prompt that a menu bar app may never get | not used |
