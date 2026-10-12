@@ -59,26 +59,30 @@ Each rule below failed on a real scenario:
 
 **No single signal decides.** Leaving is a combination of signs, each with a weight.
 
-## Proposed scoring
+## Scoring
 
-The score only counts with the lid closed and no external display, whatever the power source, because a power bank in a bag is still a bag. At 70 the Mac sleeps.
+The score only counts with the lid closed and no external display, whatever the power source, because a power bank in a bag is still a bag. At 70 the Mac sleeps. The weights live in `Sources/BagWeights.swift`, and `Tests/BagScenarioTests.swift` replays the scenarios below against them, polling every 30 s like the app does. A change to a weight that breaks a use case fails the test.
 
 | Sign | Weight | Why |
 |---|---|---|
 | Carried after the lid closed, for ≥ 1 / 3 / 5 / 8 min | 15 / 30 / 45 / 60 | A carry inside the office is short; the way home is long. |
-| Left the network: lost for ≥ 60 s, or on a new network for ≥ 60 s | 30 | Roaming between access points drops the network for seconds; leaving drops it for good. Scores 0 on a hotspot (`isExpensive`), which travels along. |
-| Standing on its edge: gravity off the Z axis | 15 | A Mac stands in a backpack and lies flat on a desk. *Not measured yet.* |
+| Left the network: lost, or on another network, for ≥ 60 s | 30 | Roaming between access points drops the network for seconds; leaving drops it for good. Scores 0 when the lid closed on a hotspot (`isExpensive`), which travels along; Wi-Fi handing over to a hotspot outside still counts. |
+| Standing on its edge: gravity mostly off the Z axis | 15 | A Mac stands in a backpack and lies flat on a desk. *Not measured yet.* |
 | Warming with the lid closed: `thermalState` at `.fair` or above | 20 | It cools in the hand and warms in a bag. |
 
 How the scenarios come out:
 
-| Scenario | Score | Outcome |
-|---|---|---|
-| 2 min to a meeting room, access point switch | 15 | keeps working |
-| 2 min to a meeting room on a hotspot, on its edge | 30 | keeps working |
-| Leaving the office on Wi-Fi: 3 min walk, network lost, on its edge | 75 | sleeps after about 3 min |
-| Leaving on a hotspot: 8 min walk, on its edge | 75 | sleeps after about 8 min |
-| Leaving on a hotspot: 5 min walk, on its edge, warming | 80 | sleeps after about 5 min |
+| Scenario | Outcome |
+|---|---|
+| 2 min to a meeting room with an access point switch, then an hour there | keeps working (15) |
+| 2 min to a meeting room on a hotspot, on its edge, then an hour there | keeps working (30) |
+| 6 min across the campus in the hand, same office network | keeps working (45) |
+| Closed on the desk under load, warm, for an hour | keeps working (20) |
+| Leaving the office on Wi-Fi: walking on its edge, network gone after a minute | sleeps after 3 min |
+| Leaving the office, Wi-Fi handing over to the phone's hotspot outside | sleeps after 3 min |
+| Leaving on a hotspot: walking on its edge | sleeps after 8 min |
+| Leaving on a hotspot: walking on its edge and warming up | sleeps after 5 min |
+| Walked 4 min out of the office on its edge, then the bag rests in a car | sleeps after 3 min |
 
 **Heat has the last word regardless of the score.** Insomnia pauses at `.critical` anywhere, and at `.serious` with the lid closed and no external display, which applies even with this setting off. A pause for heat or for a bag with the lid closed lasts until the lid opens, so a wake after cooling down never holds the Mac awake in the bag again.
 
