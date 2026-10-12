@@ -13,7 +13,7 @@ struct BagWeights {
     var sleepAt: Int
 
     static let standard = BagWeights(
-        carried: [(8, 60), (5, 45), (3, 30), (1, 15)],
+        carried: [(1, 15), (3, 30), (5, 45), (8, 60)],
         leftNetwork: 30,
         onEdge: 15,
         warm: 20,
