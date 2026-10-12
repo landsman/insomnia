@@ -2,15 +2,17 @@ import ServiceManagement
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Opening at login, and the apps that keep the Mac awake whenever they are open.
+/// Opening at login, the apps that keep the Mac awake whenever they are open, and the bag safeguard.
 struct SettingsView: View {
     let insomnia: Insomnia
     @State private var apps: [String]
     @State private var openAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var watchesForBag: Bool
 
     init(insomnia: Insomnia) {
         self.insomnia = insomnia
         _apps = State(initialValue: insomnia.chosenApps)
+        _watchesForBag = State(initialValue: insomnia.watchesForBag)
     }
 
     var body: some View {
@@ -41,10 +43,18 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            Section {
+                Toggle("Sleep When Carried in a Bag", isOn: $watchesForBag)
+                    .onChange(of: watchesForBag) { _, on in insomnia.watchesForBag = on }
+            } footer: {
+                Text("With the lid closed on battery, Insomnia notices your Mac being carried, leaving its network or warming up, and puts it to sleep before it overheats.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .formStyle(.grouped)
         // Grows with the list, which scrolls once it is long.
-        .frame(width: 440, height: CGFloat(212 + 41 * min(apps.count, 8)))
+        .frame(width: 440, height: CGFloat(322 + 41 * min(apps.count, 8)))
     }
 
     private func add() {

@@ -20,6 +20,10 @@ final class Insomnia {
     var chosenApps: [String] {
         didSet { defaults.set(chosenApps, forKey: "chosenApps"); refresh() }
     }
+    /// Off by default: it reads a motion sensor Apple does not document, and it can put the Mac to sleep mid-work.
+    var watchesForBag: Bool {
+        didSet { defaults.set(watchesForBag, forKey: "watchesForBag"); refresh() }
+    }
     /// The menu watches work while it is open, even when Insomnia is off.
     var isWatching = false {
         didSet { refresh(); rescanSoon() }
@@ -55,6 +59,7 @@ final class Insomnia {
         isOn = defaults.bool(forKey: "on")
         mode = Mode(rawValue: defaults.string(forKey: "mode") ?? "") ?? .working
         chosenApps = defaults.stringArray(forKey: "chosenApps") ?? []
+        watchesForBag = defaults.bool(forKey: "watchesForBag")
         refresh()
         rescanSoon()
 
@@ -107,7 +112,7 @@ final class Insomnia {
         if let demo { (agents, apps, upload) = demo }
         #endif
         if isWorking { lastWork = now }
-        if isOn {
+        if isOn && watchesForBag {
             let reading = bagSensors.read()
             onBattery = reading.onBattery
             let score = bagDetector.score
@@ -118,7 +123,9 @@ final class Insomnia {
             }
         } else {
             bagSensors.stop()
-            pause = nil
+            bagDetector = BagDetector()
+            onBattery = false
+            pause = isOn ? Power.pause(bag: .none) : nil
         }
 
         let recentWork = lastWork.map { now.timeIntervalSince($0) < Self.grace } ?? false
