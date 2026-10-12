@@ -79,33 +79,6 @@ final class HeaderView: MenuRowView {
     }
 }
 
-/// A setting with a small switch, for options that are simply on or off.
-final class SwitchView: MenuRowView {
-    let toggle = NSSwitch()
-    private let title: String
-
-    init(title: String) {
-        self.title = title
-        super.init(height: 28)
-        toggle.controlSize = .mini
-        toggle.setAccessibilityLabel(title)
-        addSubview(toggle)
-    }
-
-    required init?(coder: NSCoder) { fatalError() }
-
-    override func layout() {
-        super.layout()
-        toggle.sizeToFit()
-        toggle.setFrameOrigin(NSPoint(x: bounds.width - Metrics.inset - toggle.frame.width,
-                                      y: ((bounds.height - toggle.frame.height) / 2).rounded()))
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        drawText(title, x: Metrics.inset)
-    }
-}
-
 /// A choice with a round glyph that fills with the accent color when selected. Picking one keeps the menu open.
 final class OptionView: MenuRowView {
     var isSelected = false {
@@ -155,12 +128,21 @@ final class OptionView: MenuRowView {
     }
 }
 
-/// A working agent: the project it works in and which agent it is.
-final class AgentView: MenuRowView {
-    var agent: (project: String, name: String) = ("", "") {
+/// Something at work: an app with its icon, an agent with its project, or an upload.
+struct WorkRow: Equatable {
+    var title: String
+    var detail = ""
+    var bundle: String?
+    var symbol = "apple.terminal"
+}
+
+final class WorkView: MenuRowView {
+    private static var icons: [String: NSImage] = [:]
+
+    var row = WorkRow(title: "") {
         didSet {
             needsDisplay = true
-            setAccessibilityLabel("\(agent.project), \(agent.name)")
+            setAccessibilityLabel(row.detail.isEmpty ? row.title : "\(row.title), \(row.detail)")
         }
     }
 
@@ -174,9 +156,17 @@ final class AgentView: MenuRowView {
 
     override func draw(_ dirtyRect: NSRect) {
         let column = NSRect(x: Metrics.inset, y: 0, width: Metrics.circle, height: bounds.height)
-        drawSymbol("apple.terminal", in: column, pointSize: 13, weight: .regular, color: .secondaryLabelColor)
-        let nameWidth = drawText(agent.name, x: bounds.width - Metrics.inset, color: .secondaryLabelColor, alignRight: true)
-        drawText(agent.project, x: Metrics.textX, maxWidth: bounds.width - Metrics.inset - nameWidth - 12 - Metrics.textX)
+        if let bundle = row.bundle {
+            let icon = Self.icons[bundle] ?? NSWorkspace.shared.icon(forFile: bundle)
+            Self.icons[bundle] = icon
+            icon.draw(in: NSRect(x: column.midX - 9, y: column.midY - 9, width: 18, height: 18), from: .zero,
+                      operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
+        } else {
+            drawSymbol(row.symbol, in: column, pointSize: 13, weight: .regular, color: .secondaryLabelColor)
+        }
+        let detailWidth = row.detail.isEmpty ? 0 : drawText(row.detail, x: bounds.width - Metrics.inset,
+                                                            color: .secondaryLabelColor, alignRight: true) + 12
+        drawText(row.title, x: Metrics.textX, maxWidth: bounds.width - Metrics.inset - detailWidth - Metrics.textX)
     }
 }
 

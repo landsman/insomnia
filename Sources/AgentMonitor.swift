@@ -28,13 +28,6 @@ final class AgentMonitor {
     /// A model served on this Mac counts once it streams real data, unlike the keep-alive chatter of an IDE link.
     private static let busyLoopbackBytes: UInt64 = 4096
 
-    private struct Process {
-        let pid: pid_t
-        let parent: pid_t
-        let name: String
-        let started: Int
-    }
-
     private struct Connection {
         let key: UInt32
         let isLoopback: Bool
@@ -47,41 +40,23 @@ final class AgentMonitor {
     private var traffic: [UInt32: UInt64] = [:]
     private var lastScan: Date?
     private var lastBusy: [pid_t: Date] = [:]
-    private let secondsPerTick: Double = {
-        var timebase = mach_timebase_info_data_t()
-        mach_timebase_info(&timebase)
-        return Double(timebase.numer) / Double(timebase.denom) / 1e9
-    }()
+    /// Agents, everything they run and whatever runs them, such as a terminal or the Claude app.
+    private(set) var involved: Set<pid_t> = []
 
-    func scan(now: Date = .now) -> [Agent] {
+    func scan(_ processes: Processes, now: Date = .now) -> [Agent] {
         // Traffic only counts between back-to-back scans: work done while nobody watched is not work now.
         let continuous = lastScan.map { now.timeIntervalSince($0) < 60 } ?? false
         lastScan = now
 
-        var byPID: [pid_t: Process] = [:], children: [pid_t: [Process]] = [:], names: [pid_t: String] = [:]
-        for process in Self.processes() {
-            byPID[process.pid] = process
-            children[process.parent, default: []].append(process)
+        var names: [pid_t: String] = [:]
+        for process in processes.all {
             if let name = agentName(of: process) { names[process.pid] = name }
         }
-        identified = identified.filter { byPID[$0.key] != nil }
+        identified = identified.filter { processes.byPID[$0.key] != nil }
 
-        let roots = names.keys.filter { pid in
-            var parent = byPID[pid]?.parent
-            while let pid = parent, pid > 1 {
-                if names[pid] != nil { return false }
-                parent = byPID[pid]?.parent
-            }
-            return true
-        }
-        let trees = roots.map { root in
-            var members = [byPID[root]!], index = 0
-            while index < members.count {
-                members += children[members[index].pid] ?? []
-                index += 1
-            }
-            return members
-        }
+        let roots = names.keys.filter { pid in !processes.ancestors(of: pid).contains { names[$0] != nil } }
+        let trees = roots.map { processes.tree(processes.byPID[$0]!) }
+        involved = Set(trees.joined().map(\.pid) + roots.flatMap { processes.ancestors(of: $0) })
         let connections = trees.map { $0.filter { names[$0.pid] != nil }.flatMap { Self.connections(of: $0.pid) } }
         let previousTraffic = traffic
         traffic = connections.contains { !$0.isEmpty } ? Self.trafficByConnection() : [:]
@@ -112,8 +87,8 @@ final class AgentMonitor {
         return found.sorted { ($0.project, $0.name, $0.pid) < ($1.project, $1.name, $1.pid) }
     }
 
-    private func isBusy(_ root: pid_t, _ members: [Process], now: Date) -> Bool {
-        let seconds = members.reduce(0) { $0 + cpuSeconds($1.pid) }
+    private func isBusy(_ root: pid_t, _ members: [Processes.Process], now: Date) -> Bool {
+        let seconds = members.reduce(0) { $0 + Processes.cpuSeconds($1.pid) }
         let elapsed = cpu[root].map { now.timeIntervalSince($0.at) } ?? .infinity
         // A blip in a short window is no load, so short windows keep the older baseline.
         guard elapsed >= 2 else { return false }
@@ -121,17 +96,7 @@ final class AgentMonitor {
         return elapsed < 60 && (seconds - cpu[root]!.seconds) / elapsed > Self.busyCPU
     }
 
-    private func cpuSeconds(_ pid: pid_t) -> Double {
-        var usage = rusage_info_v2()
-        let result = withUnsafeMutablePointer(to: &usage) {
-            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V2, $0) }
-        }
-        guard result == 0 else { return 0 }
-        let ticks = usage.ri_user_time + usage.ri_system_time + usage.ri_child_user_time + usage.ri_child_system_time
-        return Double(ticks) * secondsPerTick
-    }
-
-    private func agentName(of process: Process) -> String? {
+    private func agentName(of process: Processes.Process) -> String? {
         if let name = Self.agents[process.name] { return name }
         // Scripts run through an interpreter, and native installs may be named after their version.
         guard Self.interpreters.contains(process.name) || process.name.hasPrefix("python") || process.name.first?.isNumber == true
@@ -144,20 +109,6 @@ final class AgentMonitor {
         }
         identified[process.pid] = (process.started, Self.agents[tool])
         return Self.agents[tool]
-    }
-
-    /// All processes of this user in one call.
-    private static func processes() -> [Process] {
-        var mib = [CTL_KERN, KERN_PROC, KERN_PROC_UID, Int32(bitPattern: getuid())]
-        var size = 0
-        guard sysctl(&mib, 4, nil, &size, nil, 0) == 0 else { return [] }
-        var list = [kinfo_proc](repeating: kinfo_proc(), count: size / MemoryLayout<kinfo_proc>.stride + 32)
-        size = list.count * MemoryLayout<kinfo_proc>.stride
-        guard sysctl(&mib, 4, &list, &size, nil, 0) == 0 else { return [] }
-        return list.prefix(size / MemoryLayout<kinfo_proc>.stride).map {
-            Process(pid: $0.kp_proc.p_pid, parent: $0.kp_eproc.e_ppid, name: string($0.kp_proc.p_comm),
-                    started: $0.kp_proc.p_un.__p_starttime.tv_sec)
-        }
     }
 
     private static func arguments(of pid: pid_t) -> [String] {
@@ -185,7 +136,7 @@ final class AgentMonitor {
         var info = proc_vnodepathinfo()
         let size = Int32(MemoryLayout<proc_vnodepathinfo>.size)
         guard proc_pidinfo(pid, PROC_PIDVNODEPATHINFO, 0, &info, size) == size else { return "" }
-        let path = string(info.pvi_cdir.vip_path)
+        let path = Processes.string(info.pvi_cdir.vip_path)
         return path == NSHomeDirectory() ? "~" : lastComponent(path)
     }
 
@@ -245,10 +196,6 @@ final class AgentMonitor {
         }
         let bytes = withUnsafeBytes(of: socket.insi_faddr.ina_6) { Array($0) }
         return bytes == Array(repeating: 0, count: 15) + [1] || (bytes[10] == 0xFF && bytes[11] == 0xFF && bytes[12] == 127)
-    }
-
-    private static func string<T>(_ tuple: T) -> String {
-        withUnsafeBytes(of: tuple) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
     }
 
     private static func lastComponent(_ path: String) -> String {

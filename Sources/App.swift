@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #if DEBUG
         if let snapshot = Snapshot.requested {
             insomnia = Insomnia(defaults: snapshot.defaults)
-            insomnia.demoAgents = snapshot.agents
+            insomnia.demo = snapshot.demo
             statusMenu = StatusMenu(insomnia: insomnia)
             snapshot.run(statusMenu)
             return
@@ -25,6 +25,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         #endif
         insomnia = Insomnia(defaults: .standard)
         statusMenu = StatusMenu(insomnia: insomnia)
+        // Never shown for a menu bar app, but gives the settings window its ⌘W.
+        let file = NSMenuItem()
+        file.submenu = NSMenu()
+        file.submenu?.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        NSApp.mainMenu = NSMenu()
+        NSApp.mainMenu?.addItem(file)
+    }
+
+    /// Opening Insomnia again from Finder or Launchpad shows its settings, since it has no other window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        statusMenu.openSettings()
+        return false
     }
 
     func applicationWillTerminate(_ notification: Notification) {

@@ -1,5 +1,5 @@
 import AppKit
-import ServiceManagement
+import SwiftUI
 
 @MainActor
 final class StatusMenu: NSObject, NSMenuDelegate {
@@ -16,17 +16,25 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     let menu = NSMenu()
     private let insomnia: Insomnia
     private let header = HeaderView()
-    private let agentsOption = OptionView(symbol: "sparkles", title: "While Agents Work")
+    private static let rate = ByteCountFormatter()
+
+    private let workingOption = OptionView(symbol: "hourglass", title: "While Working")
     private let alwaysOption = OptionView(symbol: "infinity", title: "Until Turned Off")
     private let note = NoteView()
-    private let login = SwitchView(title: "Open at Login")
-    private var agentViews: [AgentView] = []
+    lazy var settings: NSWindow = {
+        let window = NSWindow(contentViewController: NSHostingController(rootView: SettingsView(insomnia: insomnia)))
+        window.title = "Insomnia Settings"
+        window.styleMask = [.titled, .closable]
+        window.isReleasedWhenClosed = false
+        window.center()
+        return window
+    }()
+    private var workViews: [WorkView] = []
     private var structure = ""
     private var isOpen = false
     private var shownAwake: Bool?
     private var shownOn: Bool?
-    // Both cost a system query, so they are read when the menu opens rather than on every refresh.
-    private var loginEnabled = SMAppService.mainApp.status == .enabled
+    // A file system check, so it is made when the menu opens rather than on every refresh.
     private lazy var canKeepLidClosed = insomnia.power.canKeepLidClosed
 
     init(insomnia: Insomnia) {
@@ -36,11 +44,10 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
         statusItem.menu = menu
         statusItem.button?.toolTip = "Insomnia"
+        note.text = "Nothing at the moment"
         header.toggle.target = self
         header.toggle.action = #selector(toggle)
-        login.toggle.target = self
-        login.toggle.action = #selector(toggleLogin)
-        agentsOption.onSelect = { [weak self] in self?.choose(.agents) }
+        workingOption.onSelect = { [weak self] in self?.choose(.working) }
         alwaysOption.onSelect = { [weak self] in self?.choose(.always) }
         insomnia.onChange = { [weak self] in self?.update() }
         update()
@@ -48,7 +55,6 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
-        loginEnabled = SMAppService.mainApp.status == .enabled
         canKeepLidClosed = insomnia.power.canKeepLidClosed
         updateMenu()
     }
@@ -78,38 +84,35 @@ final class StatusMenu: NSObject, NSMenuDelegate {
     }
 
     private func updateMenu() {
-        let working = workingAgents
-        let structure = "\(insomnia.mode) \(working.count) \(canKeepLidClosed)"
+        let rows = workRows
+        let structure = "\(insomnia.mode) \(rows.count) \(canKeepLidClosed)"
         if structure != self.structure {
             self.structure = structure
-            rebuild(agentRows: working.count)
+            rebuild(workRows: rows.count)
         }
 
         header.toggle.state = insomnia.isOn ? .on : .off
         header.statusText = status
-        agentsOption.isSelected = insomnia.mode == .agents
+        workingOption.isSelected = insomnia.mode == .working
         alwaysOption.isSelected = insomnia.mode == .always
-        login.toggle.state = loginEnabled ? .on : .off
-        for (view, agent) in zip(agentViews, working) { view.agent = agent }
-        let count = insomnia.agents.count
-        note.text = count == 0 ? "No agents running" : count == 1 ? "1 agent is idle" : "\(count) agents are idle"
+        for (view, row) in zip(workViews, rows) { view.row = row }
     }
 
-    private func rebuild(agentRows: Int) {
+    private func rebuild(workRows: Int) {
         menu.removeAllItems()
         menu.addItem(item(view: header))
         menu.addItem(.separator())
         menu.addItem(.sectionHeader(title: "Stay Awake"))
-        menu.addItem(item(view: agentsOption, action: #selector(pick)))
+        menu.addItem(item(view: workingOption, action: #selector(pick)))
         menu.addItem(item(view: alwaysOption, action: #selector(pick)))
 
-        if insomnia.mode == .agents {
+        if insomnia.mode == .working {
             menu.addItem(.separator())
             menu.addItem(.sectionHeader(title: "Working Now"))
-            while agentViews.count < agentRows { agentViews.append(AgentView()) }
-            agentViews.removeLast(agentViews.count - agentRows)
-            for view in agentViews { menu.addItem(item(view: view, enabled: false)) }
-            if agentRows == 0 { menu.addItem(item(view: note, enabled: false)) }
+            while workViews.count < workRows { workViews.append(WorkView()) }
+            workViews.removeLast(workViews.count - workRows)
+            for view in workViews { menu.addItem(item(view: view, enabled: false)) }
+            if workRows == 0 { menu.addItem(item(view: note, enabled: false)) }
         }
 
         if !canKeepLidClosed {
@@ -118,7 +121,7 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         }
 
         menu.addItem(.separator())
-        menu.addItem(item(view: login))
+        menu.addItem(item("Settings…", #selector(openSettings), key: ","))
         menu.addItem(item("Quit Insomnia", #selector(quit), key: "q"))
     }
 
@@ -129,30 +132,44 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         case .heat: return "Paused while your Mac cools down"
         case nil: break
         }
-        guard let since = insomnia.awakeSince else { return "Waiting for agents" }
+        guard let since = insomnia.awakeSince else { return "Waiting for work" }
         if let sleepsAt = insomnia.sleepsAt {
-            return "Agents are done, sleep in \(max(1, Int((sleepsAt.timeIntervalSinceNow / 60).rounded(.up)))) min"
+            return "Work is done, sleep in \(max(1, Int((sleepsAt.timeIntervalSinceNow / 60).rounded(.up)))) min"
         }
-        if insomnia.mode == .agents {
-            let working = insomnia.agents.filter(\.isWorking)
-            return working.count == 1 ? "Awake while \(working[0].name) works" : "Awake while \(working.count) agents work"
+        if insomnia.mode == .working {
+            var names: [String] = []
+            for name in insomnia.apps.map(\.name) + insomnia.agents.filter(\.isWorking).map(\.name) where !names.contains(name) {
+                names.append(name)
+            }
+            let count = names.count + (insomnia.upload > 0 ? 1 : 0)
+            switch count {
+            case 1: return names.first.map { "Awake while \($0) works" } ?? "Awake while uploading"
+            case 2 where names.count == 2: return "Awake while \(names[0]) and \(names[1]) work"
+            default: return "Awake while \(names[0]) and \(count - 1) more work"
+            }
         }
         let elapsed = Date.now.timeIntervalSince(since)
         guard elapsed >= 60 else { return "Keeping your Mac awake" }
         return "Awake for \(Self.duration.string(from: elapsed) ?? "")"
     }
 
-    /// Working agents, one row per project and agent.
-    private var workingAgents: [(project: String, name: String)] {
-        var rows: [(project: String, name: String, count: Int)] = []
+    /// Busy apps, then working agents with one row per project and agent, then the upload.
+    private var workRows: [WorkRow] {
+        var agents: [(project: String, name: String, count: Int)] = []
         for agent in insomnia.agents where agent.isWorking {
-            if let index = rows.firstIndex(where: { $0.project == agent.project && $0.name == agent.name }) {
-                rows[index].count += 1
+            if let index = agents.firstIndex(where: { $0.project == agent.project && $0.name == agent.name }) {
+                agents[index].count += 1
             } else {
-                rows.append((agent.project, agent.name, 1))
+                agents.append((agent.project, agent.name, 1))
             }
         }
-        return rows.map { ($0.project, $0.count > 1 ? "\($0.name) ×\($0.count)" : $0.name) }
+        var rows = insomnia.apps.map { WorkRow(title: $0.name, bundle: $0.bundle) }
+        rows += agents.map { WorkRow(title: $0.project, detail: $0.count > 1 ? "\($0.name) ×\($0.count)" : $0.name) }
+        if insomnia.upload > 0 {
+            rows.append(WorkRow(title: "Uploading", detail: "\(Self.rate.string(fromByteCount: Int64(insomnia.upload)))/s",
+                                symbol: "arrow.up.circle"))
+        }
+        return rows
     }
 
     @objc private func toggle(_ sender: NSSwitch) {
@@ -189,11 +206,9 @@ final class StatusMenu: NSObject, NSMenuDelegate {
         updateMenu()
     }
 
-    @objc private func toggleLogin() {
-        let service = SMAppService.mainApp
-        try? loginEnabled ? service.unregister() : service.register()
-        loginEnabled = service.status == .enabled
-        updateMenu()
+    @objc func openSettings() {
+        NSApp.activate()
+        settings.makeKeyAndOrderFront(nil)
     }
 
     @objc private func quit() {
